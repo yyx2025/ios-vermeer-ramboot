@@ -9,6 +9,9 @@
 #define HIGH_RAM_LO UINT64_C(0x8c0000000)
 #define HIGH_RAM_HI UINT64_C(0x940000000)
 
+struct rg_bank { uint64_t base, size; };
+struct rg_layout { unsigned count; struct rg_bank bank[16]; };
+
 static uint32_t rg_be32(const uint8_t *p)
 { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static uint64_t rg_be64(const uint8_t *p)
@@ -28,8 +31,10 @@ static int rg_memory_name(const uint8_t *p, size_t n)
 /* Return zero only after the complete tree and reserve map are checked.
  * available is a hard mapping limit, not a trusted header length.
  */
-static int ram_guard(const uint8_t *f, size_t available, uint64_t lo, uint64_t hi)
+static int ram_guard_collect(const uint8_t *f, size_t available, uint64_t lo, uint64_t hi,
+                             struct rg_layout *layout)
 {
+    if (layout) layout->count = 0;
     if (available < 40 || rg_be32(f) != 0xd00dfeed || lo >= hi) return 1;
     uint32_t total = rg_be32(f + 4), so = rg_be32(f + 8), strings = rg_be32(f + 12);
     uint32_t reserve = rg_be32(f + 16), sn = rg_be32(f + 32), sz = rg_be32(f + 36);
@@ -93,7 +98,13 @@ static int ram_guard(const uint8_t *f, size_t available, uint64_t lo, uint64_t h
                     uint64_t base = rg_be64(f + p + i), size = rg_be64(f + p + i + 8);
                     if (size > UINT64_MAX - base) return 15;
                     if (in_reserved && rg_overlap(base, size, lo, hi)) return 16;
-                    if (in_memory && base <= lo && base + size >= hi) covered = 1;
+                    if (in_memory) {
+                        if (layout) {
+                            if (layout->count == 16) return 21;
+                            layout->bank[layout->count++] = (struct rg_bank){base, size};
+                        }
+                        if (base <= lo && base + size >= hi) covered = 1;
+                    }
                 }
             }
             p = (p + len + 3) & ~(size_t)3;
@@ -104,3 +115,6 @@ static int ram_guard(const uint8_t *f, size_t available, uint64_t lo, uint64_t h
     }
     return 20;
 }
+
+static int ram_guard(const uint8_t *f, size_t available, uint64_t lo, uint64_t hi)
+{ return ram_guard_collect(f, available, lo, hi, NULL); }

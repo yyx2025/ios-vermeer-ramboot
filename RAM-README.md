@@ -9,7 +9,7 @@
 - 不加入 Sweet UFS、Vermeer UFS、GPT/分区读写、持久 console 驱动。根卷使用 XNU 的 `md0`，根卷内文件修改只发生在 RAM。
 - 新根卷准备检查要求 `rd=md0 vermeer_ram_only=1`、真实已初始化内存盘和已挂载的 HFS 根文件系统。保留原作者的 20H392 迁移版本检查。
 - 原作者的 RAM 日志环和可选 CDC ACM USB 调试保留。
-- 本地 GUI 及 RAM 配置检查通过。新增 GitHub 构建选项 `vermeer-ios-ram-gui`；完整 XNU 尚未编译，补丁尚未在完整 XNU 源码树中全部应用验证。
+- 本地 GUI 及 RAM 配置检查通过。`vermeer-ios-ram-gui` 已在 macOS 完整编译成功，并通过最终内核 RAM-only 服务/禁止标记检查。首次构建发现根卷 hook 的一处 tab 上下文错误，修正后其余补丁在真实 XNU 源码上全部应用通过。
 - Windows 可交叉编译 Android v4 独立启动 shim。它使用嵌入的 XNU payload，避免依赖 ABL 接收 boot ramdisk；不经过 EDK2/DarwinBoot 菜单。
 
 ## 临时启动验证镜像
@@ -26,7 +26,7 @@ SHA-256：`e5c4f8ebd9f62f5ced9e6f73d6c4822ddb1d4f21337cfa113dc0e50eb36555fe`。
 
 ## 官方固件
 
-本地未发现作者 root002 或配套 20H392 IPSW，因此已按用户要求下载官方 iPhone10,3/iPhone10,6 iOS 16.7.16（20H392）IPSW。完整文件下载位置为 `D:\ios hack\work\ipsw-cache\20H392`，下载完成后校验官方 SHA-256。
+本地未发现作者 root002 或配套 20H392 IPSW，因此已按用户要求下载官方 iPhone10,3/iPhone10,6 iOS 16.7.16（20H392）IPSW。完整文件位于 `D:\ios hack\work\ipsw-cache\20H392`，6,171,035,648 字节，已通过官方 SHA-256：`ece1194f7e233e9109c5790a8d23a4564a10a254e15ec5b09978a343265568fb`。三个根卷容器已从本地 ZIP 提取并校验 CRC，保存到工作目录 `work/firmware-20H392`。
 
 已从在线 ZIP 读取并校验各小成员 CRC，解析 BuildManifest 并解压 D22AP 的 LZFSE DeviceTree。通用 product ADT 已提取到工作目录 `work/firmware-20H392/d22ap-product.adt`；没有复制设备私有校准或 syscfg 占位数据。
 
@@ -34,9 +34,20 @@ SHA-256：`e5c4f8ebd9f62f5ced9e6f73d6c4822ddb1d4f21337cfa113dc0e50eb36555fe`。
 
 ## 仍需完成
 
-1. 在原工作流要求的 macOS/Xcode 环境编译 RAM GUI 内核，验证所有补丁和最终二进制没有物理存储路径。
-2. 校验并解包完整官方 IPSW，使用支持 APFS 解压并保留 POSIX 所有者、模式和硬链接的环境制作 journaled HFSX 根卷；现有 17.7.11 文件不与 16.7.16 内核混用。
+1. 制作并验证完整 journaled HFSX 根卷：需要 APFS 解压并保留 POSIX 所有者、模式和硬链接；现有 17.7.11 文件不与 16.7.16 内核混用。电脑上使用独立、无窗口的 Linux 文件系统构建环境，仅接入新建本地构建盘及只读固件文件，不接入任何物理磁盘；手机运行目标仍是实体 K70。
 3. 当前 2 GiB RAM 窗口容不下完整根卷。小 shim + USB 分段传输、64 位总长度/偏移、最终 RAM 原位接收和更大内存映射尚未实现，不能把大镜像直接交给 `fastboot boot`。
 4. 在这台 12 GB K70 上验证真实高位 RAM、完整卷的内存占用、XNU/launchd/backboardd/SpringBoard 与触摸日志。作者记录的 Hello milestone 不等于本次 RAM 移植已成功。
 
 本项目没有执行手机刷写，也没有将固件或根卷上传到 GitHub。
+
+## 成功构建和下一次实机诊断
+
+用户授权创建的私有仓库：<https://github.com/yyx2025/ios-vermeer-ramboot>。
+成功运行：<https://github.com/yyx2025/ios-vermeer-ramboot/actions/runs/41186716430>。
+内核源码提交 `cbebe4b5aa8577777dbc9397af65dc5e762222ec`；下载后与构建 SHA256SUMS 再次核对通过。
+最终内核 17,167,928 字节，SHA-256 `41e9004a7202b0718561c7a56c3e25c804b0b1b0bd634428ef9b561d3e34c8c9`，工作目录输出 `outputs/vermeer-ram-gui-kernel`。它只是一份内核，还不是可启动完整 iOS 的镜像。
+
+`outputs/vermeer-ram-map.img` 是独立内存布局诊断：15,941,632 字节，SHA-256 `8b788c9a76cd04ce8ef640909816966eef90490d54ab708caefddc097fcf0cff`。
+它在内存中临时运行 shim，只读取 ABL 的有界 FDT、显示真实 BANK/BASE/SIZE 和固定保留区检查，不跳转 XNU，90 秒后请求复位。`CHECK4G/6G/8G/10G=0` 只表示静态 FDT 检查通过，不能代替实机 RAM 访问和动态保留区验证。
+内存解析测试覆盖银行列表、保留区冲突、地址溢出和每一种截断长度；本地编译通过。
+现有 `vermeer-lab-ram-checkpoint.img` 保留原哈希，可另行验证 XNU/md0/PID1。两份镜像都不是完整 iOS GUI。

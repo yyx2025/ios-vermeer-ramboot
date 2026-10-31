@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include "console.h"
 #include "loader.h"
+#ifdef VERMEER_RAM_MAP_ONLY
+extern void ram_map_dump(uintptr_t dtb);
+#endif
 #define R(r) ({ uint64_t v; __asm__ volatile("mrs %0, " r : "=r"(v)); v; })
 
 static void reset_after(unsigned seconds)
@@ -36,7 +39,12 @@ void boot_main(uintptr_t fdt)
     con_str("VERMEER", "XNU early boot shim - NOT iOS");
     con_hex("IMAGE", (uintptr_t)boot_main);
     con_hex("FDT", fdt);
+#ifdef VERMEER_RAM_MAP_ONLY
+    con_str("MODE", "RAM map only - no XNU jump");
+    ram_map_dump(fdt);
+#else
     con_str("LOADER", loader_boot(fdt));
+#endif
     con_str("RESET", "in 90s; no partitions written");
     reset_after(90);
 }

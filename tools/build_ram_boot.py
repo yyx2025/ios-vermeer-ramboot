@@ -28,9 +28,12 @@ def main():
     p.add_argument('stock_boot',type=Path)
     p.add_argument('output',type=Path)
     p.add_argument('--checkpoint',action='store_true')
+    p.add_argument('--ram-map-only',action='store_true',help='read bounded live FDT and return; no XNU jump')
     p.add_argument('--product-adt',type=Path)
     p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
     a = p.parse_args()
+    if a.ram_map_only and not a.checkpoint:
+        raise ValueError('RAM map diagnostics require explicit checkpoint mode')
     if a.output.exists(): raise ValueError('Refusing to overwrite existing image')
     if a.ramdisk.stat().st_size >= 0x80000000:
         raise ValueError('Root alone exceeds the retained 2 GiB window; multi-GiB streaming/mapping is not implemented yet')
@@ -77,16 +80,17 @@ def main():
     env = dict(os.environ)
     env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
     objects=[]
-    for source in ('entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c'):
+    for source in ('entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c'):
         target = 'out/'+Path(source).stem+'.o'
         subprocess.run([str(clang),'--target=aarch64-none-elf','-O2','-ffreestanding','-nostdlib',
                         '-fno-pic','-fno-pie','-mgeneral-regs-only','-mstrict-align','-fno-stack-protector',
-                        '-Wall','-Wextra','-Werror','-c',source,'-o',target],cwd=build,env=env,check=True)
+                        '-Wall','-Wextra','-Werror',*(['-DVERMEER_RAM_MAP_ONLY'] if a.ram_map_only else []),
+                        '-c',source,'-o',target],cwd=build,env=env,check=True)
         objects.append(target)
     # entry.S intentionally stores _end as the ARM64 image-size field.
     # Match upstream: the executable C code must have no absolute pointers.
     relocs=subprocess.check_output([str(readelf),'-r','out/main.o','out/console.o',
-                                  'out/loader.o','out/fdt.o'],cwd=build,env=env,text=True)
+                                  'out/loader.o','out/fdt.o','out/ram_map.o'],cwd=build,env=env,text=True)
     if 'R_AARCH64_ABS64' in relocs:raise ValueError('Absolute relocation in freestanding shim')
     subprocess.run([str(ld),'-flavor','gnu','-m','aarch64elf','-T','link.ld',
                     '--build-id=none',*objects,'-o','out/shim.elf'],cwd=build,env=env,check=True)
@@ -102,7 +106,8 @@ def main():
     a.output.write_bytes(boot)
     report={'image':str(a.output.resolve()),'sha256':hashlib.sha256(boot).hexdigest(),'bytes':len(boot),
             'kernel_sha256':hashlib.sha256(kernel).hexdigest(),'ramdisk_sha256':hashlib.sha256(a.ramdisk.read_bytes()).hexdigest(),
-            'profile':'source PID1 checkpoint' if a.checkpoint else 'RAM iOS GUI candidate',
+            'profile':'live FDT RAM map only' if a.ram_map_only else ('source PID1 checkpoint' if a.checkpoint else 'RAM iOS GUI candidate'),
+            'xnu_jump_enabled':not a.ram_map_only,
             'command_line':args,'window_base':'0x8c0000000','window_bytes':mem,
             'live_fdt_guard':True,'boot_ramdisk_bytes':0,'storage_commands':False,'hardware_verified':False,
             'payload':info}
