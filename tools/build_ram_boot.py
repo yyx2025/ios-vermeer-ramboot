@@ -29,9 +29,14 @@ def main():
     p.add_argument('output',type=Path)
     p.add_argument('--checkpoint',action='store_true')
     p.add_argument('--ram-map-only',action='store_true',help='read bounded live FDT and return; no XNU jump')
+    p.add_argument('--ram-read-only',action='store_true',help='after a live-FDT guard, sample 9 GiB using aligned reads only')
+    p.add_argument('--ram-write-restore',action='store_true',help='test and restore 65536 sampled words in lower 8 GiB; no XNU or partition writes')
     p.add_argument('--product-adt',type=Path)
     p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
     a = p.parse_args()
+    if a.ram_read_only and a.ram_write_restore:
+        raise ValueError('Read-only and write/restore diagnostics are separate modes')
+    if a.ram_read_only or a.ram_write_restore: a.ram_map_only = True
     if a.ram_map_only and not a.checkpoint:
         raise ValueError('RAM map diagnostics require explicit checkpoint mode')
     if a.output.exists(): raise ValueError('Refusing to overwrite existing image')
@@ -85,6 +90,8 @@ def main():
         subprocess.run([str(clang),'--target=aarch64-none-elf','-O2','-ffreestanding','-nostdlib',
                         '-fno-pic','-fno-pie','-mgeneral-regs-only','-mstrict-align','-fno-stack-protector',
                         '-Wall','-Wextra','-Werror',*(['-DVERMEER_RAM_MAP_ONLY'] if a.ram_map_only else []),
+                        *(['-DVERMEER_RAM_READ_ONLY'] if a.ram_read_only else []),
+                        *(['-DVERMEER_RAM_WRITE_RESTORE'] if a.ram_write_restore else []),
                         '-c',source,'-o',target],cwd=build,env=env,check=True)
         objects.append(target)
     # entry.S intentionally stores _end as the ARM64 image-size field.
@@ -106,11 +113,16 @@ def main():
     a.output.write_bytes(boot)
     report={'image':str(a.output.resolve()),'sha256':hashlib.sha256(boot).hexdigest(),'bytes':len(boot),
             'kernel_sha256':hashlib.sha256(kernel).hexdigest(),'ramdisk_sha256':hashlib.sha256(a.ramdisk.read_bytes()).hexdigest(),
-            'profile':'live FDT RAM map only' if a.ram_map_only else ('source PID1 checkpoint' if a.checkpoint else 'RAM iOS GUI candidate'),
+            'profile':'live-FDT guarded 8 GiB sparse write/alias/restoration test' if a.ram_write_restore else ('live-FDT guarded 9 GiB sparse read-only test' if a.ram_read_only else ('live FDT RAM map only' if a.ram_map_only else ('source PID1 checkpoint' if a.checkpoint else 'RAM iOS GUI candidate'))),
+            'candidate_ram_write_enabled':a.ram_write_restore or not a.ram_map_only,
             'xnu_jump_enabled':not a.ram_map_only,
             'command_line':args,'window_base':'0x8c0000000','window_bytes':mem,
             'live_fdt_guard':True,'boot_ramdisk_bytes':0,'storage_commands':False,'hardware_verified':False,
             'payload':info}
+    if a.ram_write_restore:
+        report.update({'test_window_bytes':0x200000000,'test_words':65536,
+                       'mmu_and_data_cache_must_be_off':True,'original_words_restored_and_checked':True,
+                       'whole_memory_test':False,'hardware_write_test_verified':False})
     a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))
 

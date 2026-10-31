@@ -1,5 +1,17 @@
 # Vermeer RAM 临时启动移植
 
+## 最新实机验证（2026-10-31）
+
+用户已报告 `vermeer-ram-read9g.img` 显示 `SPARSE READ PASS`：在 9 GiB 范围读取了 32768 个位置。
+随后 `vermeer-ram-write8g-v2.img` 显示 `SPARSE WRITE ALIAS PASS`、`RESTORED=1`：在较低的 8 GiB 范围测试 65536 个位置，两轮地址相关数据写入/读取后恢复并核对原值。
+这两次是实机抽样测试；尚未验证每个字节，也尚未运行完整 iOS。
+
+写入诊断先检查 live FDT、固定保留区、MMU/数据缓存关闭状态和镜像/保存缓冲不重叠；不跳转 XNU、不写分区，显示结果后 90 秒请求复位。它使用 `--checkpoint --ram-write-restore` 单独构建，和 `--ram-read-only` 不能同时使用。现有 XNU 运行窗口仍为 2 GiB。
+
+全部官方 20H392 文件展开后约 10.53 GiB（按源 inode 去重），因此完整根卷采用压缩块驻留 RAM、按需解压的路线。`tools/pack_ram_root.py` 是电脑侧打包/全量校验工具；压缩根卷块驱动、RAM 写覆盖层和启动前 USB 根卷接收尚未接入内核。打包输出不是可直接 `fastboot boot` 的镜像，实际压缩体积以完成后的记录为准。
+
+根卷构建必须另外核对源 inode：当前 APFS 读取器把链接数报告为 1，单独使用 `rsync -H` 会丢失硬链接拓扑。电脑侧需在内容和权限一致后恢复这些关系，再完整核对文件并检查 HFSX。
+
 来源：<https://github.com/xyyyds0106/ios-vermeer-lab>，源码版本 `d1dcb06ff1d8fa57acc54051ae87d31c97e771db`。
 原始源码和说明保留；`UPSTREAM.json` 记录原文件哈希。原项目说明中的 UFS 根卷和存储授权不适用于本项目。
 
