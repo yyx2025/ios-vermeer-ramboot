@@ -51,3 +51,10 @@ SHA-256：`e5c4f8ebd9f62f5ced9e6f73d6c4822ddb1d4f21337cfa113dc0e50eb36555fe`。
 它在内存中临时运行 shim，只读取 ABL 的有界 FDT、显示真实 BANK/BASE/SIZE 和固定保留区检查，不跳转 XNU，90 秒后请求复位。`CHECK4G/6G/8G/10G=0` 只表示静态 FDT 检查通过，不能代替实机 RAM 访问和动态保留区验证。
 内存解析测试覆盖银行列表、保留区冲突、地址溢出和每一种截断长度；本地编译通过。
 现有 `vermeer-lab-ram-checkpoint.img` 保留原哈希，可另行验证 XNU/md0/PID1。两份镜像都不是完整 iOS GUI。
+
+### KSU 授权后的只读采集
+
+2026-10-31，用户为 KSU Shell（UID 2000）开启 root 后，已通过 ADB 只读导出实机 Android FDT。它显示 `0x8C0000000..0x980000000`（3 GiB）与 `0x980000000..0xB00000000`（6 GiB）相邻，固定保留区未与该 9 GiB 段重叠。动态保留池和实机大范围访问仍需另外验证。
+第一版 guard 对 4/6/8 GiB 返回 `0x12`，是由于要求单个 reg 条目完整覆盖。新 guard 接受相邻/重叠条目的连续覆盖，仍拒绝 1 字节空洞、溢出、固定保留区冲突和畸形 FDT。更新后的单元测试和实际 Android FDT 检查通过（4/6/8 为 0，10 为 18）。
+独立 `outputs/vermeer-ram-map-v2.img` 只读取 live FDT，不跳转 XNU或访问大候选窗口；原 checkpoint 和实际 XNU 的 2 GiB 映射不变。Android FDT 为 8 条，而此前 ABL 屏幕为 9 条，不能省略启动时的 live FDT 检查。
+`tools/collect_k70_memory.py --root --output OUTPUT_DIR` 仅使用用户已授予的 Shell root 来读取，普通模式仍无需 root。源码不包含任何实机 FDT/固件数据。

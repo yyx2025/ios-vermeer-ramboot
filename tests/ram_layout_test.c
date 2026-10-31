@@ -6,6 +6,7 @@
 
 static uint8_t f[4096];
 static unsigned pos;
+static unsigned split_memory;
 static const char names[] = "#address-cells\0#size-cells\0reg\0ranges\0";
 static void be32(uint8_t *p, uint32_t v)
 { p[0]=v>>24; p[1]=v>>16; p[2]=v>>8; p[3]=v; }
@@ -24,10 +25,14 @@ static unsigned fixture(uint64_t reserved, uint64_t reserved_size)
     if (reserved_size) { be64(f+40,reserved);be64(f+48,reserved_size); }
     node("");cells(0);cells(15);
     node("memory@80000000");
-    uint8_t banks[32];
+    uint8_t banks[48];
     be64(banks,0x80000000);be64(banks+8,0x70000000);
     be64(banks+16,0x880000000ULL);be64(banks+24,0x240000000ULL);
-    prop(27,banks,32);word(2);
+    if (split_memory) {
+        be64(banks+16,0x8c0000000ULL);be64(banks+24,0xc0000000ULL);
+        be64(banks+32,0x980000000ULL+(split_memory==2 ? 1 : 0));be64(banks+40,0x180000000ULL);
+    }
+    prop(27,banks,split_memory ? 48 : 32);word(2);
     node("reserved-memory");cells(0);cells(15);prop(31,banks,0);
     node("firmware@a00000000");be64(banks,0xa00000000ULL);be64(banks+8,0x10000);
     prop(27,banks,16);word(2);word(2);word(2);word(9);
@@ -54,5 +59,12 @@ int main(void)
     assert(ram_guard(f,n,HIGH_RAM_LO,HIGH_RAM_HI)==4);
     n=fixture(0,0);be32(f+36,0xffffffff);
     assert(ram_guard(f,n,HIGH_RAM_LO,HIGH_RAM_HI)!=0);
-    puts("RAM layout: banks, fixed reservations, overflow and every truncated length: PASS");
+    split_memory=1;n=fixture(0,0);
+    assert(ram_guard_collect(f,n,HIGH_RAM_LO,HIGH_RAM_LO+0x100000000ULL,&layout)==0 && layout.count==3);
+    split_memory=2;n=fixture(0,0);
+    assert(ram_guard(f,n,HIGH_RAM_LO,HIGH_RAM_LO+0x100000000ULL)==18);
+    struct rg_layout unordered={.count=3,.bank={{0x980000000ULL,0x180000000ULL},{0x80000000,0x70000000},{0x8c0000000ULL,0xc0000000ULL}}};
+    assert(rg_covers(&unordered,HIGH_RAM_LO,0xb00000000ULL));
+    assert(!rg_covers(&unordered,HIGH_RAM_LO,0xb00000001ULL));
+    puts("RAM layout: adjacent/unsorted banks, one-byte gap, fixed reservations, overflow and truncation: PASS");
 }

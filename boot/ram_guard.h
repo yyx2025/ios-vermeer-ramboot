@@ -28,13 +28,31 @@ static int rg_memory_name(const uint8_t *p, size_t n)
 {
     return (n == 6 || (n > 7 && p[6] == '@')) && rg_name(p, 6, "memory");
 }
+/* Entries may be unsorted and split at a DDR bank boundary. Only exact
+ * adjacency/overlap extends coverage; even a one-byte gap remains a failure.
+ */
+static int rg_covers(const struct rg_layout *layout, uint64_t lo, uint64_t hi)
+{
+    uint64_t cursor = lo;
+    for (unsigned pass = 0; pass < layout->count && cursor < hi; pass++) {
+        uint64_t before = cursor;
+        for (unsigned i = 0; i < layout->count; i++) {
+            uint64_t base = layout->bank[i].base, end = base + layout->bank[i].size;
+            if (base <= cursor && end > cursor) cursor = end;
+        }
+        if (cursor == before) break;
+    }
+    return cursor >= hi;
+}
 /* Return zero only after the complete tree and reserve map are checked.
  * available is a hard mapping limit, not a trusted header length.
  */
 static int ram_guard_collect(const uint8_t *f, size_t available, uint64_t lo, uint64_t hi,
                              struct rg_layout *layout)
 {
-    if (layout) layout->count = 0;
+    struct rg_layout local;
+    struct rg_layout *banks = layout ? layout : &local;
+    banks->count = 0;
     if (available < 40 || rg_be32(f) != 0xd00dfeed || lo >= hi) return 1;
     uint32_t total = rg_be32(f + 4), so = rg_be32(f + 8), strings = rg_be32(f + 12);
     uint32_t reserve = rg_be32(f + 16), sn = rg_be32(f + 32), sz = rg_be32(f + 36);
@@ -55,7 +73,7 @@ static int ram_guard_collect(const uint8_t *f, size_t available, uint64_t lo, ui
         if (rg_overlap(base, size, lo, hi)) return 4;
     }
     size_t p = so, end = so + sz;
-    int depth = 0, in_memory = 0, in_reserved = 0, covered = 0;
+    int depth = 0, in_memory = 0, in_reserved = 0;
     int root_ac = 0, root_sc = 0, res_ac = 0, res_sc = 0, roots = 0;
     while (p < end) {
         if (end - p < 4) return 5;
@@ -99,18 +117,16 @@ static int ram_guard_collect(const uint8_t *f, size_t available, uint64_t lo, ui
                     if (size > UINT64_MAX - base) return 15;
                     if (in_reserved && rg_overlap(base, size, lo, hi)) return 16;
                     if (in_memory) {
-                        if (layout) {
-                            if (layout->count == 16) return 21;
-                            layout->bank[layout->count++] = (struct rg_bank){base, size};
-                        }
-                        if (base <= lo && base + size >= hi) covered = 1;
+                        if (banks->count == 16) return 21;
+                        banks->bank[banks->count++] = (struct rg_bank){base, size};
                     }
                 }
             }
             p = (p + len + 3) & ~(size_t)3;
             if (p > end) return 17;
         } else if (token == 9) {
-            return depth || roots != 1 || !covered || root_ac != 2 || root_sc != 2 ? 18 : 0;
+            return depth || roots != 1 || root_ac != 2 || root_sc != 2 ||
+                   !rg_covers(banks, lo, hi) ? 18 : 0;
         } else if (token != 4) return 19;
     }
     return 20;
