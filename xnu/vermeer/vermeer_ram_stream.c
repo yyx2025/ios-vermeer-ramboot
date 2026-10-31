@@ -126,6 +126,7 @@ int vermeer_ram_stream_boot(void)
         (config.overlay_bytes&PAGE_MASK) || config.packed_bytes<VRS_ALIGN ||
         config.packed_bytes>config.bytes-config.overlay_bytes ||
         ((config.packed_bytes+PAGE_MASK)&~(uint64_t)PAGE_MASK)>config.bytes-config.overlay_bytes)return EINVAL;
+    printf("VERMEER RAM: VMRC0001 config accepted; VMRAM001 complete root expected\n");
     /* This aperture is outside the retained 2GiB XNU physical allocator.
      * The shim supplies this ADT property only after the live 8GiB FDT guard.
      * Use normal coherent RAM attributes, never ml_io_map's device attributes

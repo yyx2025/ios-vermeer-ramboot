@@ -1,72 +1,52 @@
-# Vermeer RAM 临时启动移植
+# Vermeer 完整根卷 RAM 临时启动
 
-## 最新实机验证（2026-10-31）
+完整官方 iOS 16.7.16（20H392）根卷已经制作、核对、检查文件系统并压缩完成。新 RAM 接入代码已完成本地编译和协议测试；完整桌面仍待实体 Redmi K70（12 GB）验证。
 
-用户已报告 `vermeer-ram-read9g.img` 显示 `SPARSE READ PASS`：在 9 GiB 范围读取了 32768 个位置。
-随后 `vermeer-ram-write8g-v2.img` 显示 `SPARSE WRITE ALIAS PASS`、`RESTORED=1`：在较低的 8 GiB 范围测试 65536 个位置，两轮地址相关数据写入/读取后恢复并核对原值。
-这两次是实机抽样测试；尚未验证每个字节，也尚未运行完整 iOS。
+## 已验证的阶段
 
-写入诊断先检查 live FDT、固定保留区、MMU/数据缓存关闭状态和镜像/保存缓冲不重叠；不跳转 XNU、不写分区，显示结果后 90 秒请求复位。它使用 `--checkpoint --ram-write-restore` 单独构建，和 `--ram-read-only` 不能同时使用。现有 XNU 运行窗口仍为 2 GiB。
+用户已报告 9 GiB 范围抽样只读 `SPARSE READ PASS`，以及较低 8 GiB 抽样写入、别名检查、恢复 `SPARSE WRITE ALIAS PASS`、`RESTORED=1`。旧 checkpoint 照片确认 `BSD root: md0` 和源码 PID 1 持续运行，但它没有 Apple 用户空间。
 
-全部官方 20H392 文件展开后约 10.53 GiB（按源 inode 去重），因此完整根卷采用压缩块驻留 RAM、按需解压的路线。`tools/pack_ram_root.py` 是电脑侧打包/全量校验工具；压缩根卷块驱动、RAM 写覆盖层和启动前 USB 根卷接收尚未接入内核。打包输出不是可直接 `fastboot boot` 的镜像，实际压缩体积以完成后的记录为准。
+USB 当前被映射身份检查拒绝。新内核会打印具体 SMMU 值，检查继续保留。`vermeer-usb-map.img` 未实机测试；用户要求后续集中测试。
 
-根卷构建必须另外核对源 inode：当前 APFS 读取器把链接数报告为 1，单独使用 `rsync -H` 会丢失硬链接拓扑。电脑侧需在内容和权限一致后恢复这些关系，再完整核对文件并检查 HFSX。
+## 完整根卷和预算
 
-来源：<https://github.com/xyyyds0106/ios-vermeer-lab>，源码版本 `d1dcb06ff1d8fa57acc54051ae87d31c97e771db`。
-原始源码和说明保留；`UPSTREAM.json` 记录原文件哈希。原项目说明中的 UFS 根卷和存储授权不适用于本项目。
+| 项目 | 实际大小 |
+|---|---:|
+| 完整官方文件，按源 inode 去重 | 11,304,857,126 字节（10.53 GiB） |
+| 完整 HFSX 逻辑卷 | 13 GiB |
+| 压缩后驻留 RAM 的数据 | 5,884,403,712 字节（5.48 GiB） |
+| 有上限的临时写入空间 | 512 MiB |
+| XNU 物理分配器 | 2 GiB |
+| 压缩卷及写入覆盖层的外部区域 | 6 GiB |
 
-## 已实现的本地改动
+144097 个唯一文件哈希、321210 个条目及链接、所有者、权限完成核对，HFSX 检查通过，已经从电脑构建环境卸载。Linux HFS 的 symlink mode 固定显示 0777，该字段明确排除；目标及所有者已核对。没有应用 activation/Setup 跳过修改。
 
-- `tools/prepare_ram_gui.py` 复用作者 GUI/显示缓冲生命周期/触摸/USB 调试补丁，生成 71 个 RAM GUI 内核补丁。
-- 不加入 Sweet UFS、Vermeer UFS、GPT/分区读写、持久 console 驱动。根卷使用 XNU 的 `md0`，根卷内文件修改只发生在 RAM。
-- 新根卷准备检查要求 `rd=md0 vermeer_ram_only=1`、真实已初始化内存盘和已挂载的 HFS 根文件系统。保留原作者的 20H392 迁移版本检查。
-- 原作者的 RAM 日志环和可选 CDC ACM USB 调试保留。
-- 本地 GUI 及 RAM 配置检查通过。`vermeer-ios-ram-gui` 已在 macOS 完整编译成功，并通过最终内核 RAM-only 服务/禁止标记检查。首次构建发现根卷 hook 的一处 tab 上下文错误，修正后其余补丁在真实 XNU 源码上全部应用通过。
-- Windows 可交叉编译 Android v4 独立启动 shim。它使用嵌入的 XNU payload，避免依赖 ABL 接收 boot ramdisk；不经过 EDK2/DarwinBoot 菜单。
+HFSX SHA256：`11592101bbfe8dd17f6c1e5edd5ffbde7de9abaac2dd98ca4d83dffb5c72d21a`。
 
-## 临时启动验证镜像
+压缩卷 SHA256：`e610f21c8816169ae2e1e5d3190bb0d6913902e47116162da165530e87890f83`。
 
-工作目录 `outputs/vermeer-lab-ram-checkpoint.img`，15,941,632 字节。
-SHA-256：`e5c4f8ebd9f62f5ced9e6f73d6c4822ddb1d4f21337cfa113dc0e50eb36555fe`。
+压缩卷不是 boot 镜像。电脑先临时启动小镜像，再通过 USB 分段装入压缩卷。`md0` 逻辑容量仍为 13 GiB；读取按需解压，修改进入 16 KiB 粒度的 RAM 覆盖层，满时返回空间不足。
 
-内核取自作者 Actions `39428900143` 的 `xnu-kernel` 产物；内核与 PID1 均通过作者清单验证。
-内核哈希 `99238192beebadd3bdf72c277d139dcba605967d2cb4cf35c846f31985ad7d7f`；PID1 哈希 `ec8b463e1aac6665ca49d97f13feace9b4f33c85f7298b59ce7f3224af078617`。
+XNU 保持 `0x8C0000000..0x940000000`（2 GiB）。根卷及覆盖层使用 `0x940000000..0xAC0000000`（6 GiB），上方 1 GiB 留空。shim 在复制前检查 live FDT 的较低 8 GiB，外部区域以普通可缓存 RAM 属性映射。抽样通过不代表逐字节验证或完整运行时占用已通过。
 
-这是源代码 PID1 验证程序，**不包含 Apple launchd/SpringBoard，也不是完整 iOS GUI**。本机已编译打包，尚未在用户 K70 上验证。其 RAM 窗口为 `0x8C0000000–0x940000000`（2 GiB）；复制前要求实机 FDT 范围和保留区检查通过。
+## 新代码和验证
 
-只执行 `fastboot boot`，不执行 flash、erase、set_active 或 GPT/分区修改。出现 XNU 日志后可能需要等待 120–150 秒；目标输出是 `BSD root: md0`、PID1 和持续 heartbeat。
+RAM GUI profile 为 73 个补丁，保留作者 GUI、触摸、AKS、watchdog 和 RAM/USB 日志，排除 UFS/GPT/持久日志代码。在挂根前接收完整压缩卷，核对完整 SHA256、索引 SHA256、块 CRC32 和 journaled HFS header，再注册压缩 `md0`。大小和偏移使用 64 位处理。
 
-## 官方固件
+测试覆盖压缩读取、跨页临时写入、容量用尽、数据损坏、超过 4 GiB 的偏移，以及 Python 帧到实际 C 接收器的分片、错误确认和截断。八个新/改 C 模块使用上次成功构建的真实 XNU 头文件和配置在本机编译通过；完整链接构建的状态独立记录。
 
-本地未发现作者 root002 或配套 20H392 IPSW，因此已按用户要求下载官方 iPhone10,3/iPhone10,6 iOS 16.7.16（20H392）IPSW。完整文件位于 `D:\ios hack\work\ipsw-cache\20H392`，6,171,035,648 字节，已通过官方 SHA-256：`ece1194f7e233e9109c5790a8d23a4564a10a254e15ec5b09978a343265568fb`。三个根卷容器已从本地 ZIP 提取并校验 CRC，保存到工作目录 `work/firmware-20H392`。
+`tools/build_ram_boot.py --ram-stream` 的根卷位置参数使用 packed-root JSON；kernel 和官方 product ADT 为本地输入。它只嵌入 kernel+ADT，不嵌入根卷或 RAMDisk 占位物。实际新内核必须通过 `--gui --ram-only --ram-stream` 标记检查，旧内核不可用于此模式。
 
-已从在线 ZIP 读取并校验各小成员 CRC，解析 BuildManifest 并解压 D22AP 的 LZFSE DeviceTree。通用 product ADT 已提取到工作目录 `work/firmware-20H392/d22ap-product.adt`；没有复制设备私有校准或 syscfg 占位数据。
+`tools/send_ram_root.py` 在电脑核对完整压缩卷 SHA256，等待准确的 K70DBG004 USB 身份，逐段发送并核对 ACK。错误即停止；最终哈希符合预期才提交。完成后保存启动日志，并在 120/300 秒发出只读进程、显示帧和输入查询。
 
-系统组成：OS `087-86698-044.dmg`（4,730,814,044 字节），SystemOS `087-86593-047.dmg`（2,743,074,816 字节），AppOS `087-86715-047.dmg`（10,485,760 字节）。这些是镜像容器大小，不是展开后的 HFS 文件占用。
+## 构建与集中测试
 
-## 仍需完成
+私有源码仓库：<https://github.com/yyx2025/ios-vermeer-ramboot>。上游：<https://github.com/xyyyds0106/ios-vermeer-lab>，基线 `d1dcb06ff1d8fa57acc54051ae87d31c97e771db`。
 
-1. 制作并验证完整 journaled HFSX 根卷：需要 APFS 解压并保留 POSIX 所有者、模式和硬链接；现有 17.7.11 文件不与 16.7.16 内核混用。电脑上使用独立、无窗口的 Linux 文件系统构建环境，仅接入新建本地构建盘及只读固件文件，不接入任何物理磁盘；手机运行目标仍是实体 K70。
-3. 当前 2 GiB RAM 窗口容不下完整根卷。小 shim + USB 分段传输、64 位总长度/偏移、最终 RAM 原位接收和更大内存映射尚未实现，不能把大镜像直接交给 `fastboot boot`。
-4. 在这台 12 GB K70 上验证真实高位 RAM、完整卷的内存占用、XNU/launchd/backboardd/SpringBoard 与触摸日志。作者记录的 Hello milestone 不等于本次 RAM 移植已成功。
+旧版已实机启动内核保留为 `outputs/vermeer-ram-gui-kernel`。新内核另存 `outputs/vermeer-ram-stream-kernel`，新小镜像目标为 `outputs/vermeer-complete-ram-stream.img`；是否已产生及校验通过，以相邻 JSON 记录为准。
 
-本项目没有执行手机刷写，也没有将固件或根卷上传到 GitHub。
+macOS 14 构建服务进入停机/退役期，改用 macOS 15，复用经哈希核对的 17 组旧版 IIG 源码输出。RAM profile 不改变这些接口定义；没有分发旧编译器二进制。原缓存产物于 2026-11-07 过期，长期重建需保存已审核的生成源码。
 
-## 成功构建和下一次实机诊断
+`outputs/Start-Vermeer-RAM.ps1` 默认只检查文件。镜像完成后，用户进入 fastboot 并执行 `-Boot`，可在一轮中完成临时启动、RAM 接收和日志收集。没有完整镜像及匹配记录时入口会停止。
 
-用户授权创建的私有仓库：<https://github.com/yyx2025/ios-vermeer-ramboot>。
-成功运行：<https://github.com/yyx2025/ios-vermeer-ramboot/actions/runs/41186716430>。
-内核源码提交 `cbebe4b5aa8577777dbc9397af65dc5e762222ec`；下载后与构建 SHA256SUMS 再次核对通过。
-最终内核 17,167,928 字节，SHA-256 `41e9004a7202b0718561c7a56c3e25c804b0b1b0bd634428ef9b561d3e34c8c9`，工作目录输出 `outputs/vermeer-ram-gui-kernel`。它只是一份内核，还不是可启动完整 iOS 的镜像。
-
-`outputs/vermeer-ram-map.img` 是独立内存布局诊断：15,941,632 字节，SHA-256 `8b788c9a76cd04ce8ef640909816966eef90490d54ab708caefddc097fcf0cff`。
-它在内存中临时运行 shim，只读取 ABL 的有界 FDT、显示真实 BANK/BASE/SIZE 和固定保留区检查，不跳转 XNU，90 秒后请求复位。`CHECK4G/6G/8G/10G=0` 只表示静态 FDT 检查通过，不能代替实机 RAM 访问和动态保留区验证。
-内存解析测试覆盖银行列表、保留区冲突、地址溢出和每一种截断长度；本地编译通过。
-现有 `vermeer-lab-ram-checkpoint.img` 保留原哈希，可另行验证 XNU/md0/PID1。两份镜像都不是完整 iOS GUI。
-
-### KSU 授权后的只读采集
-
-2026-10-31，用户为 KSU Shell（UID 2000）开启 root 后，已通过 ADB 只读导出实机 Android FDT。它显示 `0x8C0000000..0x980000000`（3 GiB）与 `0x980000000..0xB00000000`（6 GiB）相邻，固定保留区未与该 9 GiB 段重叠。动态保留池和实机大范围访问仍需另外验证。
-第一版 guard 对 4/6/8 GiB 返回 `0x12`，是由于要求单个 reg 条目完整覆盖。新 guard 接受相邻/重叠条目的连续覆盖，仍拒绝 1 字节空洞、溢出、固定保留区冲突和畸形 FDT。更新后的单元测试和实际 Android FDT 检查通过（4/6/8 为 0，10 为 18）。
-独立 `outputs/vermeer-ram-map-v2.img` 只读取 live FDT，不跳转 XNU或访问大候选窗口；原 checkpoint 和实际 XNU 的 2 GiB 映射不变。Android FDT 为 8 条，而此前 ABL 屏幕为 9 条，不能省略启动时的 live FDT 检查。
-`tools/collect_k70_memory.py --root --output OUTPUT_DIR` 仅使用用户已授予的 Shell root 来读取，普通模式仍无需 root。源码不包含任何实机 FDT/固件数据。
+本次没有操作手机分区，也没有上传固件、根卷、设备 FDT 或凭据。USB、完整根卷挂载、Apple launchd/backboardd/SpringBoard 和触摸仍待集中实机验证。
