@@ -2,6 +2,7 @@ name: XNU bring-up lab
 
 permissions:
   contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -38,9 +39,9 @@ env:
 
 jobs:
   build:
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # macOS 14 is being retired. Keep the verified XNU-8796 IIG generated source
+    # while building the unchanged DriverKit definitions with current tools.
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +113,13 @@ jobs:
           sudo xcode-select -s "$XC"
           xcodebuild -version
           xcrun --find iig
+
+      - name: Restore verified XNU-8796 IIG source compatibility
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/restore_legacy_iig.py .legacy-iig
+          echo "IIG=$PWD/.legacy-iig/iig" >> "$GITHUB_ENV"
 
       - name: Build
         working-directory: dxb
