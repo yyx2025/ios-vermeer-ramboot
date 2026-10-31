@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tarfile
 import urllib.request
@@ -29,6 +30,22 @@ class Redirect(urllib.request.HTTPRedirectHandler):
 def prepare(dest, archive=None):
     dest = Path(dest).resolve()
     dest.mkdir(parents=True, exist_ok=True)
+    packaged = Path(__file__).resolve().parent / 'legacy_iig_cache'
+    if not archive and (packaged / 'manifest.json').exists():
+        manifest = json.loads((packaged / 'manifest.json').read_text())
+        if len(manifest) != 17:
+            raise ValueError('Expected the 17 pinned legacy IIG source pairs')
+        for stem, entry in manifest.items():
+            if not stem.isidentifier():
+                raise ValueError('Invalid legacy IIG source name')
+            for suffix, key in (('.h', 'header_sha256'), ('.iig.cpp', 'implementation_sha256')):
+                file = packaged / (stem + suffix)
+                if hashlib.sha256(file.read_bytes()).hexdigest() != entry[key]:
+                    raise ValueError('Packaged legacy IIG source checksum mismatch')
+                shutil.copyfile(file, dest / file.name)
+        shutil.copyfile(packaged / 'manifest.json', dest / 'manifest.json')
+        print('Verified permanent legacy IIG source pairs:', len(manifest), flush=True)
+        return install_wrapper(dest)
     if archive:
         raw = Path(archive).read_bytes()
     else:
@@ -72,6 +89,11 @@ def prepare(dest, archive=None):
     if not manifest:
         raise ValueError('Successful build archive contains no legacy generated IIG output')
     (dest / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+    print('Verified legacy IIG source pairs:', len(manifest), flush=True)
+    return install_wrapper(dest)
+
+
+def install_wrapper(dest):
     wrapper = dest / 'iig'
     wrapper.write_text('''#!/usr/bin/env python3
 import hashlib,json
@@ -92,7 +114,6 @@ for option_name,suffix,key in (('--header','.h','header_sha256'),('--impl','.iig
 print('Pinned Xcode15 IIG source: '+stem)
 ''')
     wrapper.chmod(0o755)
-    print('Verified legacy IIG source pairs:', len(manifest), flush=True)
     return wrapper
 
 

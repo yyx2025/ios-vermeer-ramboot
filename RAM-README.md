@@ -45,7 +45,7 @@ RAM GUI profile 为 73 个补丁，保留作者 GUI、触摸、AKS、watchdog �
 
 旧版已实机启动内核保留为 `outputs/vermeer-ram-gui-kernel`。新内核另存 `outputs/vermeer-ram-stream-kernel`，新小镜像目标为 `outputs/vermeer-complete-ram-stream.img`；是否已产生及校验通过，以相邻 JSON 记录为准。
 
-macOS 14 构建服务进入停机/退役期，改用 macOS 15，复用经哈希核对的 17 组旧版 IIG 源码输出。RAM profile 不改变这些接口定义；没有分发旧编译器二进制。原缓存产物于 2026-11-07 过期，长期重建需保存已审核的生成源码。
+macOS 14 构建服务进入停机/退役期，改用 macOS 15，复用经哈希核对的 17 组旧版 IIG 源码输出。RAM profile 不改变这些接口定义；没有分发旧编译器二进制。生成源码保存在 `tools/legacy_iig_cache`，供长期重建使用。
 
 `outputs/Start-Vermeer-RAM.ps1` 默认只检查文件。镜像完成后，用户进入 fastboot 并执行 `-Boot`，可在一轮中完成临时启动、RAM 接收和日志收集。没有完整镜像及匹配记录时入口会停止。
 
