@@ -5,6 +5,9 @@
 #ifdef VERMEER_RAM_MAP_ONLY
 extern void ram_map_dump(uintptr_t dtb);
 #endif
+#ifdef VERMEER_USB_MAP_ONLY
+extern void usb_map_dump(uintptr_t dtb);
+#endif
 #define R(r) ({ uint64_t v; __asm__ volatile("mrs %0, " r : "=r"(v)); v; })
 
 static void reset_after(unsigned seconds)
@@ -36,10 +39,16 @@ void probe_exception(uint64_t slot, uint64_t *regs)
 void boot_main(uintptr_t fdt)
 {
     con_clear(BLUE);
+#ifdef VERMEER_RAM_STREAM
+    con_str("VERMEER", "complete-root RAM stream candidate");
+#else
     con_str("VERMEER", "XNU early boot shim - NOT iOS");
+#endif
     con_hex("IMAGE", (uintptr_t)boot_main);
     con_hex("FDT", fdt);
-#ifdef VERMEER_RAM_MAP_ONLY
+#ifdef VERMEER_USB_MAP_ONLY
+    usb_map_dump(fdt);
+#elif defined(VERMEER_RAM_MAP_ONLY)
     con_str("MODE", "RAM map only - no XNU jump");
     ram_map_dump(fdt);
 #else

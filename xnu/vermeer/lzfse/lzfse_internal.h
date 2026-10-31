@@ -29,7 +29,11 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 
 #include "lzfse_fse.h"
 #include "lzfse_tunables.h"
+#if defined(KERNEL)
+#include <machine/limits.h>
+#else
 #include <limits.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 

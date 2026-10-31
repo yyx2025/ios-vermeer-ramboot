@@ -10,5 +10,5 @@
     "lzvn_decode_base.c": "434647c83d4f3ed95c11465c5a3ec46f992ec94843928138039ea40be623957d",
     "lzvn_decode_base.h": "d4c13bbf13b3616c1b1472e80b117857f1339a29a48006e5aad450bcd6204c09"
   },
-  "modifications": "lzfse_fse.h kernel-specific include selection only; no allocator API wrapper included"
+  "modifications": "lzfse_fse.h and lzfse_internal.h kernel assert/libkern/machine limits include selection only; no allocator API wrapper included"
 }

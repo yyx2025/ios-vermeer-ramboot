@@ -1,7 +1,8 @@
 """Reuse the upstream GUI patch series with physical storage entirely excluded.
 
-The current shim's 2 GiB guard is deliberately retained. This profile prepares
-source patches; it does not claim a 6-8 GiB receiver or a verified kernel build.
+Retain the 2 GiB XNU allocator; the optional stream profile separately guards
+the lower 8 GiB and maps a 6 GiB compressed-root/COW region. Actual hardware
+and complete-desktop validation are recorded separately from source generation.
 """
 from pathlib import Path
 import argparse
@@ -81,7 +82,7 @@ def prepare(destination):
               'upstream_commit':json.loads((ROOT/'UPSTREAM.json').read_text())['commit'],
               'patches':[p.name for p in sorted(destination.glob('*.patch'))],
               'built':False,'hardware_verified':False,
-              'remaining':'full XNU compile; complete root construction; multi-GiB receiver and runtime RAM validation'}
+              'remaining':'full XNU compile and physical USB/root/Apple userspace validation'}
     (destination/'RAM_PROFILE.json').write_text(json.dumps(report,indent=2))
     print('RAM GUI source profile:',len(report['patches']),'patches; no physical storage sources')
 

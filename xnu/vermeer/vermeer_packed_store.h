@@ -1,6 +1,6 @@
 /* Portable packed-root block backend. No physical-storage I/O or allocation.
  * Caller supplies already owned, normally mapped RAM, scratch and a lock.
- * Not yet connected to XNU memdev, external RAM mapping or the USB receiver.
+ * vermeer_ram_stream.c integrates it with XNU memdev and the RAM receiver.
  */
 #pragma once
 #include <stddef.h>

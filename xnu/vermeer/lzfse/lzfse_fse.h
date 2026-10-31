@@ -26,7 +26,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #pragma once
 
 #if defined(KERNEL)
-#include <kern/debug.h>
+#include <kern/assert.h>
 #include <libkern/libkern.h>
 #else
 #include <assert.h>

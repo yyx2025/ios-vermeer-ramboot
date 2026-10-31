@@ -105,6 +105,9 @@ const char *loader_boot(uintptr_t dtb)
 	    p->adt_off > available || p->adt_size > available - p->adt_off)
 		return "payload bounds invalid";
 	int highram = p->phys_base == HIGH_RAM_LO && p->mem_size == HIGH_RAM_HI - HIGH_RAM_LO;
+#ifdef VERMEER_RAM_STREAM
+	if (!highram) return "RAM stream requires retained 2 GiB XNU window";
+#endif
 	if (!highram && (p->phys_base != 0xc0000000 || p->mem_size != 0x10000000))
 		return "RAM profile mismatch";
 	if (highram) {
@@ -114,10 +117,19 @@ const char *loader_boot(uintptr_t dtb)
 		if (dtb < 0xb5d00000 || dtb >= 0xb5f00000 || (dtb & 7) ||
 		    ram_guard((const uint8_t *)dtb, 0xb5f00000 - dtb, HIGH_RAM_LO, HIGH_RAM_HI))
 			return "high RAM live FDT guard refused";
+		#ifdef VERMEER_RAM_STREAM
+		if (ram_guard((const uint8_t *)dtb, 0xb5f00000 - dtb,
+		    HIGH_RAM_LO, UINT64_C(0xac0000000)))
+			return "8 GiB stream live FDT guard refused";
+		con_str("RAMGUARD", "lower 8 GiB live FDT PASS; upper 1 GiB excluded");
+		#endif
 	}
 	if (p->kernel_end < p->virt_base || p->kernel_end - p->virt_base > p->mem_size)
 		return "kernel end outside RAM";
 	uint64_t lo = p->phys_base, hi = lo + p->mem_size;
+#ifdef VERMEER_RAM_STREAM
+	hi = UINT64_C(0xac0000000);
+#endif
 	if (overlaps((uintptr_t)_head, (uintptr_t)_end, lo, hi) ||
 	    overlaps(dtb, dtb + 0x100000, lo, hi))
 		return "shim or FDT overlaps kernel RAM";

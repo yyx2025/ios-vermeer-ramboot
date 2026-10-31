@@ -55,6 +55,8 @@ jobs:
             clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g "tests/${test}_test.c" -o "host-test/$test"
             "host-test/$test"
           done
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/ram_receive_test.c xnu/vermeer/vermeer_ram_receive.c -o host-test/ram_receive
+          host-test/ram_receive
           python3 tests/gui_profile_test.py
           python3 tests/ram_profile_test.py
 

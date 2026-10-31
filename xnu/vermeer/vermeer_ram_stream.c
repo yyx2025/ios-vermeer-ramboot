@@ -4,9 +4,11 @@
 #include <pexpert/arm64/board_config.h>
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/errno.h>
+#include <sys/kernel.h>
 #include <sys/buf.h>
 #include <sys/uio.h>
 #include <kern/locks.h>
@@ -40,6 +42,9 @@ static int sleep_channel;
 LCK_GRP_DECLARE(stream_group,"vermeer-ram-root");
 LCK_MTX_DECLARE(stream_lock,&stream_group);
 extern dev_t mdevadd(int,uint64_t,unsigned int,int);
+/* The ARM pmap_map prototype is in the Mach-private pmap header, which is
+ * omitted from BSD's exported headers. Match the XNU-8796 implementation. */
+extern vm_map_address_t pmap_map(vm_map_address_t,vm_offset_t,vm_offset_t,vm_prot_t,unsigned int);
 extern void vermeer_usb_debug_start(void);
 extern int vermeer_usb_running(void);
 extern void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
