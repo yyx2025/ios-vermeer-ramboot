@@ -43,7 +43,7 @@ def prepare(destination):
  
 +bsd/dev/vermeer_ram_root.c\t\t\tstandard
  bsd/dev/memdev.c\t\t\tstandard
- bsd/dev/mem.c\t\t\tstandard
+ bsd/dev/mem.c\t\t\t\tstandard
  bsd/dev/munge.c \t\t\toptional config_requires_u32_munging
 '''
     (destination/'0021-vermeer-ram-root-hook.patch').write_text(hook)
