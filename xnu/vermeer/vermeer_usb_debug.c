@@ -27,6 +27,11 @@ extern int vermeer_debug_sample_request(void);
 extern int vermeer_debug_frame_request(void);
 extern void vermeer_debug_input_status(void);
 void vermeer_usb_debug_start(void);
+void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
+int vermeer_usb_running(void);
+static int (*ram_receiver)(const void *,unsigned);
+static _Atomic int poll_started;
+static int ram_dma;
 
 #define GCTL 0xc110
 #define GEVNTADRLO 0xc400
@@ -68,7 +73,9 @@ void vermeer_usb_debug_start(void);
 #define TX 0x2000
 #define RX_SIZE 512
 #define TX_SIZE 2048
-#define DMA_SIZE 0x4000
+#define DMA_SIZE (ram_dma?0x20000u:0x4000u)
+#define RECEIVE_OFFSET (ram_dma?0x8000u:RX)
+#define RECEIVE_SIZE (ram_dma?0x10000u:RX_SIZE)
 static const unsigned trb_off[6]={0x1000,0x1040,0x1080,0x10c0,0x1100,0x1140};
 static const char *const usb_strings[]={NULL,"Vermeer Lab","Vermeer XNU Debug","K70DBG004"};
 static struct {
@@ -76,7 +83,8 @@ static struct {
     uint64_t pa, cursor, tx_bytes, rx_bytes;
     uint32_t pos, events, setups, mps;
     unsigned resource[6], requested[6];
-    bool busy[6], failed, configured, dtr, notify;
+    bool busy[6], configured, dtr, notify;
+    _Atomic bool failed;
     enum { SETUP_PHASE, DATA_PHASE, WAIT2, WAIT3, STATUS_PHASE } phase;
     bool data_in, set_line;
     uint8_t coding[7];
@@ -106,6 +114,7 @@ static void sync_dma(unsigned off,unsigned size)
 static void fail(const char *why)
 {
     if (!u.failed) printf("VERMEER USB: stopped: %s; permanent DMA retained\n",why);
+    if (!u.failed && ram_receiver) (void)ram_receiver(NULL,0);
     u.failed=true;
 }
 static int epcmd(unsigned ep,unsigned cmd,uint32_t p0,uint32_t p1,uint32_t p2)
@@ -163,7 +172,7 @@ static void stall(void)
     (void)epcmd(0,STALL,0,0,0);
     setup_arm();
 }
-static void receive_arm(void) { transfer(2,RX,RX_SIZE,T_NORMAL); }
+static void receive_arm(void) { transfer(2,RECEIVE_OFFSET,RECEIVE_SIZE,T_NORMAL); }
 static void stop_data(void)
 {
     for (unsigned ep=2;ep<6;ep++) {
@@ -278,8 +287,14 @@ static void command_line(void)
 }
 static void receive_done(unsigned length)
 {
-    sync_dma(RX,RX_SIZE);u.rx_bytes+=length;
-    const uint8_t *p=(const uint8_t *)(u.dma+RX);
+    sync_dma(RECEIVE_OFFSET,RECEIVE_SIZE);u.rx_bytes+=length;
+    const uint8_t *p=(const uint8_t *)(u.dma+RECEIVE_OFFSET);
+    if (ram_receiver) {
+        int result=ram_receiver(p,length);
+        if (result<0) { fail("RAM frame rejected; reboot required");return; }
+        if (result>0)ram_receiver=NULL;
+        receive_arm();return;
+    }
     for (unsigned i=0;i<length;i++) {
         if (p[i]=='\r' || p[i]=='\n') command_line();
         else if (p[i]>=32 && p[i]<=126) {
@@ -373,8 +388,11 @@ static void usb_thread(void *arg __unused,wait_result_t result __unused)
 static bool identity(void)
 {
     vm_offset_t s=u.smmu;
-    if (read_reg(s,0x20)!=0x4c017e69 || read_reg(s,0x24)!=0x60000046 ||
-        read_reg(s,0)!=0x00280406 || read_reg(s,0x28)!=0x5111) return false;
+    uint32_t id0=read_reg(s,0x20),id1=read_reg(s,0x24),id2=read_reg(s,0x28),ctl=read_reg(s,0);
+    printf("VERMEER USB: SMMU id0=%08x id1=%08x id2=%08x ctl=%08x\n",id0,id1,id2,ctl);
+    if (id0!=0x4c017e69 || id1!=0x60000046 || ctl!=0x00280406 || id2!=0x5111) {
+        printf("VERMEER USB: exact SMMU identity/control gate refused; mappings unchanged\n");return false;
+    }
     unsigned matches=0;uint32_t route=0;
     for (unsigned i=0;i<105;i++) if (vusb_stream_match(read_reg(s,0x800+4*i))) {
         matches++;route=read_reg(s,0xc00+4*i);
@@ -451,6 +469,12 @@ void vermeer_usb_debug_start(void)
     thread_t thread;
     if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DCTL,rd(DCTL)&~RUN);return; }
     thread_deallocate(thread);
+    poll_started=1;
     printf("VERMEER USB: running; DMA=%llx; Windows serial K70DBG004; awaiting enumeration\n",u.pa);
 }
+void vermeer_usb_set_ram_receiver(int (*callback)(const void *,unsigned))
+{
+    if (!poll_started && !u.regs) { ram_receiver=callback;ram_dma=callback!=NULL; }
+}
+int vermeer_usb_running(void) { return poll_started && !u.failed; }
 #endif

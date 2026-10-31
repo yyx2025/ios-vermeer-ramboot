@@ -31,6 +31,12 @@ if '--gui' in sys.argv:
                  b'VERMEER SAMPLE: read-only dyld maps and USB requests enabled',
                  b'IMG %s[%d] base', b'selected tasks only')
 missing = [s.decode() for s in required if s not in data]
+if '--ram-stream' in sys.argv:
+    stream = (b'vermeer_ram_stream', b'VMRC0001', b'VMRX0001', b'VMRAM001',
+              b'VERMEER RAM: READY VMRX0001', b'complete packed SHA256/index/HFS header verified',
+              b'compressed md0 registered', b'external RAM mapped', b'VMRAM %s %u %llu',
+              b'exact SMMU identity/control gate refused')
+    missing += [s.decode() for s in stream if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))
 print('Final integrated kernel contains AKS, watchdog, crash reasons, root preparation and USB debug: PASS')

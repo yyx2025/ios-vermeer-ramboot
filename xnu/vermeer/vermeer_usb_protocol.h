@@ -24,7 +24,7 @@ static const uint8_t vusb_config[67]={
 static const uint8_t vusb_qualifier[10]={10,6,0,2,2,2,1,64,1,0};
 static inline int vusb_dma_allowed(uint64_t pa, unsigned size, unsigned bits)
 {
-    if (size!=0x4000 || (pa&0x3fff) || pa<0x8c0000000ULL ||
+    if ((size!=0x4000 && size!=0x20000) || (pa&0x3fff) || pa<0x8c0000000ULL ||
         pa>=0x940000000ULL || size>0x940000000ULL-pa || bits<36 || bits>64) return 0;
     return bits==64 || pa+size-1<(1ULL<<bits);
 }

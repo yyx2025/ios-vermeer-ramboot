@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/lzfse/lzfse",
+  "commit": "e634ca58b4821d9f3d560cdc6df5dec02ffc93fd",
+  "original_source_sha256": {
+    "lzfse_decode_base.c": "721b4061e4e655f0940b7cabcf506356c152716526e630981caf0e708d2f73d9",
+    "lzfse_fse.c": "a97e309975487af269456a4e87ef516aedaf82ce469e37971fd5676f9cd5956b",
+    "lzfse_fse.h": "4e5c2228a4bb5e5f3faf4639d5688bc7caa5cf0c0f3a971ada4fbe3631f3a533",
+    "lzfse_internal.h": "d08dc29d5440775de279d36783729131329df10cffd43ec6eff7dcfceef9f570",
+    "lzfse_tunables.h": "99d435ca45b32ba0cc273a2862ba714762610513eed469bc590bb092ea476b36",
+    "lzvn_decode_base.c": "434647c83d4f3ed95c11465c5a3ec46f992ec94843928138039ea40be623957d",
+    "lzvn_decode_base.h": "d4c13bbf13b3616c1b1472e80b117857f1339a29a48006e5aad450bcd6204c09"
+  },
+  "modifications": "lzfse_fse.h kernel-specific include selection only; no allocator API wrapper included"
+}
