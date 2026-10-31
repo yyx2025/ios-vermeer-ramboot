@@ -1,0 +1,21 @@
+"""Verify the security-relevant boundary: GUI reuse cannot compile UFS sources."""
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp)/'profile'
+    subprocess.run([sys.executable,str(root/'tools/prepare_ram_gui.py'),str(out)],check=True)
+    patches = ''.join(p.read_text(errors='surrogateescape') for p in out.glob('*.patch'))
+    for forbidden in ('+++ b/bsd/dev/sweet_ufs', '+++ b/bsd/dev/vermeer_ufs',
+                      '#include "vermeer_ufs', 'SWEETLOG', 'vermeer_ufs_ios_rootdev'):
+        assert forbidden not in patches, forbidden
+    for wanted in ('+++ b/bsd/dev/vermeer_ram_root.c', 'strcmp(rd, "md0")',
+                   'vermeer_ram_only', 'mdevgetrange(0', '+++ b/bsd/dev/vermeer_usb_debug.c',
+                   '+++ b/bsd/dev/vermeer_touch.c', 'retained pending frame ownership',
+                   '1125x2436', '1440x3200'):
+        assert wanted in patches, wanted
+    assert 'mounting dirty non-journaled root read-write' not in patches
+print('RAM GUI profile isolates physical storage and retains GUI/USB/touch patches: PASS')

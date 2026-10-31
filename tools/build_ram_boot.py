@@ -1,0 +1,113 @@
+"""Cross-build the upstream storage-free v4 shim on Windows; package only RAM roots.
+
+Checkpoint mode is a source PID1 test, not Apple userspace. GUI mode requires
+the new RAM-only kernel and a real HFS root; the 2 GiB hardware guard is retained.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import struct
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'tools'))
+import adt
+import mkpayload
+import mkvermeeradt
+
+
+def main():
+    p = argparse.ArgumentParser(__doc__)
+    p.add_argument('kernel',type=Path)
+    p.add_argument('ramdisk',type=Path)
+    p.add_argument('stock_boot',type=Path)
+    p.add_argument('output',type=Path)
+    p.add_argument('--checkpoint',action='store_true')
+    p.add_argument('--product-adt',type=Path)
+    p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
+    a = p.parse_args()
+    if a.output.exists(): raise ValueError('Refusing to overwrite existing image')
+    if a.ramdisk.stat().st_size >= 0x80000000:
+        raise ValueError('Root alone exceeds the retained 2 GiB window; multi-GiB streaming/mapping is not implemented yet')
+    kernel = a.kernel.read_bytes()
+    if not a.checkpoint:
+        subprocess.run([sys.executable,str(ROOT/'tools/check_ios_kernel.py'),str(a.kernel),
+                        '--gui','--ram-only'],check=True)
+        if not a.product_adt: raise ValueError('GUI requires official D22AP product ADT')
+        with a.ramdisk.open('rb') as f:
+            f.seek(1024)
+            header = f.read(512)
+        if header[:2] not in (b'HX',b'H+') or not struct.unpack_from('>I',header,4)[0] & (1<<13):
+            raise ValueError('GUI root must be a journaled HFS/HFSX image')
+    elif any(x in kernel for x in (b'vermeer_ufs_rw',b'vermeerufs0',b'ufsroot0',b'SWEETLOG')):
+        raise ValueError('Checkpoint kernel contains storage-root code')
+    with a.stock_boot.open('rb') as f:
+        stock = f.read(4096)
+    if stock[:8] != b'ANDROID!' or struct.unpack_from('<I',stock,40)[0] != 4:
+        raise ValueError('Expected the backed-up K70 stock boot v4 header')
+    out = ROOT/'build'/'ram-boot'
+    out.mkdir(parents=True,exist_ok=True)
+    tree = mkvermeeradt.build(True,not a.checkpoint,not a.checkpoint,a.product_adt)
+    tree_path = out/'vermeer.adt'
+    tree_path.write_bytes(adt.serialize(tree))
+    args = 'debug=0xc serial=3 cpus=1 keepsyms=1 rd=md0'
+    if not a.checkpoint:
+        args += ' rootrw=1 ignition_level=1 vermeer_ram_only=1 vermeer_prepare_root=1 vermeer_migration_baseline=1 vermeer_usb=1'
+    blob,info = mkpayload.build(a.kernel,tree_path,args,a.ramdisk)
+    mem = 0x80000000
+    if int(info['kernel_end'],16)-int(info['virt_base'],16)+len(tree_path.read_bytes())+0x8000 > mem:
+        raise ValueError('Root exceeds the validated 2 GiB kernel window; a large-root receiver and mapping are still required')
+    if len(blob)>0x10000000:
+        raise ValueError('Embedded payload exceeds upstream 256 MiB receiver limit; refusing a giant fastboot boot image')
+    build = out/'shim'
+    build.mkdir(exist_ok=True)
+    for src in (ROOT/'boot').iterdir():
+        if src.is_file(): shutil.copy2(src,build/src.name)
+    (build/'out').mkdir(exist_ok=True)
+    (build/'out/payload.bin').write_bytes(blob)
+    clang = a.llvm/'clang.exe'
+    ld = a.llvm/'lld.exe'
+    objcopy = a.llvm/'llvm-objcopy.exe'
+    readelf = a.llvm/'llvm-readelf.exe'
+    env = dict(os.environ)
+    env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
+    objects=[]
+    for source in ('entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c'):
+        target = 'out/'+Path(source).stem+'.o'
+        subprocess.run([str(clang),'--target=aarch64-none-elf','-O2','-ffreestanding','-nostdlib',
+                        '-fno-pic','-fno-pie','-mgeneral-regs-only','-mstrict-align','-fno-stack-protector',
+                        '-Wall','-Wextra','-Werror','-c',source,'-o',target],cwd=build,env=env,check=True)
+        objects.append(target)
+    # entry.S intentionally stores _end as the ARM64 image-size field.
+    # Match upstream: the executable C code must have no absolute pointers.
+    relocs=subprocess.check_output([str(readelf),'-r','out/main.o','out/console.o',
+                                  'out/loader.o','out/fdt.o'],cwd=build,env=env,text=True)
+    if 'R_AARCH64_ABS64' in relocs:raise ValueError('Absolute relocation in freestanding shim')
+    subprocess.run([str(ld),'-flavor','gnu','-m','aarch64elf','-T','link.ld',
+                    '--build-id=none',*objects,'-o','out/shim.elf'],cwd=build,env=env,check=True)
+    subprocess.run([str(objcopy),'-O','binary','out/shim.elf','out/Image'],cwd=build,env=env,check=True)
+    image=(build/'out/Image').read_bytes()
+    if image[56:60] != b'ARM\x64' or image.count(blob)!=1:
+        raise ValueError('Embedded payload/image validation failed')
+    header=bytearray(4096);header[:8]=b'ANDROID!'
+    struct.pack_into('<IIII',header,8,len(image),0,struct.unpack_from('<I',stock,16)[0],1584)
+    struct.pack_into('<I',header,40,4);header[44:56]=b'console=null'
+    boot=header+image+bytes(-len(image)%4096)
+    a.output.parent.mkdir(parents=True,exist_ok=True)
+    a.output.write_bytes(boot)
+    report={'image':str(a.output.resolve()),'sha256':hashlib.sha256(boot).hexdigest(),'bytes':len(boot),
+            'kernel_sha256':hashlib.sha256(kernel).hexdigest(),'ramdisk_sha256':hashlib.sha256(a.ramdisk.read_bytes()).hexdigest(),
+            'profile':'source PID1 checkpoint' if a.checkpoint else 'RAM iOS GUI candidate',
+            'command_line':args,'window_base':'0x8c0000000','window_bytes':mem,
+            'live_fdt_guard':True,'boot_ramdisk_bytes':0,'storage_commands':False,'hardware_verified':False,
+            'payload':info}
+    a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
+    print(json.dumps(report,indent=2))
+
+
+if __name__=='__main__':main()
