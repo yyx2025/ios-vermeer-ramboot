@@ -37,6 +37,17 @@ static inline int vusb_route_identity(uint32_t s2cr,uint32_t cbar,uint32_t sctlr
     unsigned type=(s2cr>>16)&3;
     return type==1 || (type==0 && ((cbar>>16)&3)==1 && !(sctlr&1));
 }
+static inline int vusb_smmu_layout(uint32_t id0,uint32_t id1,uint32_t id2,uint32_t control)
+{
+    /* MiCode arm-smmu.h: bits 1/2 and 4/5 select global/context fault
+     * recording/interrupts. They do not change stream lookup or translation.
+     * Keep every other control bit and the exact supported register geometry
+     * pinned, followed by unique SID40 route and context checks at runtime.
+     * No SMMU register is written by this driver. */
+    const uint32_t fault_reporting=0x36u;
+    return id0==0x4c017e69u && id1==0x60000046u && id2==0x5111u &&
+        (control&~fault_reporting)==(0x00280406u&~fault_reporting);
+}
 /* Return only recognized request kinds; malformed class OUT lengths stall. */
 enum { VUSB_BAD, VUSB_DESC, VUSB_ADDRESS, VUSB_CONFIG, VUSB_GET_CONFIG,
        VUSB_STATUS, VUSB_INTERFACE, VUSB_GET_INTERFACE, VUSB_SET_LINE,

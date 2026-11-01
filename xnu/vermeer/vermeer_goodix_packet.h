@@ -5,12 +5,9 @@
  */
 #ifndef VERMEER_GOODIX_PACKET_H
 #define VERMEER_GOODIX_PACKET_H
-#include <stdint.h>
-#define VT_CONTACTS 10
+#include "vermeer_touch_frame.h"
 #define VT_PACKET_MAX 98
 enum { VT_BAD=-1,VT_OTHER=0,VT_TOUCH=1 };
-struct vt_point { uint16_t x,y;uint8_t active; };
-struct vt_frame { struct vt_point point[VT_CONTACTS]; };
 static inline unsigned vt_le16(const uint8_t *p) { return p[0]|((unsigned)p[1]<<8); }
 static inline int vt_checksum(const uint8_t *p,unsigned length)
 {
@@ -22,7 +19,10 @@ static inline int vt_decode(const uint8_t *p,unsigned length,unsigned max_x,unsi
 {
     if(!p || !out || length<8 || length>VT_PACKET_MAX || !max_x || !max_y ||
        max_x>65535 || max_y>65535 || !vt_checksum(p,8))return VT_BAD;
-    if(!(p[0]&0x80))return VT_OTHER;
+    /* Firmware requests and gesture records have different meanings even
+     * if the controller sets more than one event bit. Never read p[2] as a
+     * finger count in a configuration/reset request. */
+    if(!(p[0]&0x80) || (p[0]&0x60))return VT_OTHER;
     unsigned count=p[2]&15u;
     if(count>VT_CONTACTS || (count && (length<8+count*8+2 || !vt_checksum(p+8,count*8+2))))return VT_BAD;
     struct vt_frame result={0};

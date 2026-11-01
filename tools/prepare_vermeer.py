@@ -131,13 +131,19 @@ if gui:
     (target / '0066-vermeer-frame-policy.patch').write_text(''.join(
         difflib.unified_diff([], data.splitlines(True), fromfile='/dev/null', tofile='b/' + path)))
     generated = ''
-    for name in ('vermeer_touch.c','vermeer_goodix_packet.h','vermeer_goodix_info.h','vermeer_geni_spi.h','vermeer_touch_clock.h'):
+    for name in ('vermeer_touch.c','vermeer_goodix_packet.h','vermeer_goodix_info.h','vermeer_geni_spi.h','vermeer_touch_clock.h','vermeer_touch_frame.h'):
         data = (source.parent / 'vermeer' / name).read_text()
         path = 'bsd/dev/' + name
         generated += ''.join(difflib.unified_diff([], data.splitlines(True),
                                                 fromfile='/dev/null', tofile='b/' + path))
     generated += (source.parent / 'vermeer/0067-vermeer-touch-hook.patch').read_text()
     (target / '0067-vermeer-touch-hook.patch').write_text(generated)
+    frames=(source.parent/'vermeer/0074-vermeer-touch-frames.patch').read_text()
+    for name in ('vermeer_touch_frame.h','vermeer_hid_frame_impl.h'):
+        path='iokit/Kernel/arm/hid/'+name
+        data=(source.parent/'vermeer'/name).read_text()
+        frames+=''.join(difflib.unified_diff([],data.splitlines(True),fromfile='/dev/null',tofile='b/'+path))
+    (target/'0074-vermeer-touch-frames.patch').write_text(frames)
     # Generic graphics fixes only; no Sweet touch, PMIC, SMP or UFS drivers.
     for number in (64, 68):
         patch = next(source.glob(f'{number:04d}-*.patch'))

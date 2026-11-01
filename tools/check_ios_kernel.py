@@ -27,6 +27,7 @@ if '--gui' in sys.argv:
                  b'VERMEER TOUCH: physical GT9916 input ready',
                  b'vermeer_touch', b'VERMEER TOUCH: IC-info guard refused',
                  b'VERMEER TOUCH: clock-snapshot', b'VERMEER TOUCH: spi-snapshot',
+                 b'VERMEER HID: atomic physical frames and canvas-edge origin v2',
                  b'VERMEER FB: logical canvas 1125x2436 centered in 1440x3200',
                  b'VERMEER SAMPLE: read-only dyld maps and USB requests enabled',
                  b'IMG %s[%d] base', b'selected tasks only')
@@ -35,7 +36,7 @@ if '--ram-stream' in sys.argv:
     stream = (b'vermeer_ram_stream', b'VMRC0001', b'VMRX0001', b'VMRAM001',
               b'VERMEER RAM: READY VMRX0001', b'complete packed SHA256/index/HFS header verified',
               b'compressed md0 registered', b'external RAM mapped', b'VMRAM %s %u %llu',
-              b'exact SMMU identity/control gate refused')
+              b'verified SMMU layout/control gate refused')
     missing += [s.decode() for s in stream if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))

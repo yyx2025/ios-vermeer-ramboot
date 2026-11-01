@@ -20,6 +20,7 @@
 #include "vermeer_touch_clock.h"
 extern vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
 extern void sweet_hid_touch(int,int,int,int);
+extern int sweet_hid_touch_frame(const struct vt_frame *);
 extern int sweet_hid_touch_ready(void);
 extern void vermeer_debug_input_register(void (*)(void));
 void vermeer_touch_start(void);
@@ -45,6 +46,7 @@ static struct {
     struct vt_frame contacts;
     unsigned _Atomic stage;
     uint64_t _Atomic reports,bad,transactions,emitted;
+    uint64_t _Atomic hid_retries;
     uint32_t _Atomic last_header;
     uint32_t _Atomic clock_vote,clock_master,clock_slave,clock_se,clock_root,clock_cfg,clock_dfs;
     uint32_t _Atomic clock_core2x,clock_core;
@@ -86,11 +88,22 @@ static void vt_status(void)
         os_atomic_load(&touch.clock_root,relaxed),os_atomic_load(&touch.clock_cfg,relaxed),os_atomic_load(&touch.clock_dfs,relaxed));
     printf("VERMEER TOUCH: spi-snapshot phase=%u irq=%08x status=%08x\n",
         os_atomic_load(&touch.spi_phase,relaxed),os_atomic_load(&touch.spi_irq,relaxed),os_atomic_load(&touch.spi_status,relaxed));
+    printf("VERMEER TOUCH: frame-retries=%llu\n",os_atomic_load(&touch.hid_retries,relaxed));
 }
-static void vt_emit_hid(void *ctx,unsigned id,int down,unsigned x,unsigned y)
+static int vt_emit_frame(const struct vt_frame *frame)
 {
-    (void)ctx;sweet_hid_touch((int)id,down,(int)x,(int)y);
-    os_atomic_inc(&touch.emitted,relaxed);
+    /* Once the controller report is acknowledged, retain it here until the
+     * HID collection is built completely; never lose a release on ENOMEM. */
+    for(unsigned i=0;i<125;i++) {
+        int result=sweet_hid_touch_frame(frame);
+        if(result) {
+            touch.contacts=*frame;
+            if(result==2)os_atomic_inc(&touch.emitted,relaxed);
+            return 1;
+        }
+        os_atomic_inc(&touch.hid_retries,relaxed);vt_sleep(8);
+    }
+    printf("VERMEER TOUCH: complete HID frame unavailable after bounded retry\n");return 0;
 }
 static int vt_spi_read(uint32_t addr,uint8_t *out,unsigned n)
 {
@@ -242,14 +255,20 @@ static void vt_thread(void *arg,wait_result_t result)
     os_atomic_store(&touch.stage,VT_IDENTITY,relaxed);
     if(!vt_identify())goto stopped;
     os_atomic_store(&touch.stage,VT_READY,relaxed);
-    printf("VERMEER TOUCH: physical GT9916 input ready (SPI FIFO, no firmware upload)\n");
+    printf("VERMEER TOUCH: physical GT9916 input ready (SPI FIFO, atomic HID frames v2)\n");
     unsigned consecutive_bad=0;
     for(;;) {
         uint8_t packet[90];
         if(!vt_spi_read(touch.info.event,packet,8))break;
         os_atomic_store(&touch.last_header,vt_le32(packet),relaxed);
-        if(!(packet[0]&0x80u)){vt_sleep(8);continue;}
+        /* A cleared status can retain the previous payload/checksum. */
+        if(!(packet[0]&0xe0u)){vt_sleep(8);continue;}
         if(!vt_checksum(packet,8))goto bad_packet;
+        if(packet[0]&0x60u) {
+            printf("VERMEER TOUCH: controller request/gesture status=%02x code=%02x; requires verified runtime setup\n",packet[0],packet[2]);
+            break;
+        }
+        if(!(packet[0]&0x80u)){vt_sleep(8);continue;}
         unsigned count=packet[2]&15u;
         if(count>10)goto bad_packet;
         unsigned n=count?8+count*8+2:8;
@@ -260,7 +279,7 @@ static void vt_thread(void *arg,wait_result_t result)
          * completed; a failed transaction must not create stuck contacts.
          */
         if(!vt_ack_event())break;
-        vt_apply(&touch.contacts,&frame,vt_emit_hid,NULL);
+        if(!vt_emit_frame(&frame))break;
         os_atomic_inc(&touch.reports,relaxed);consecutive_bad=0;vt_sleep(8);continue;
 bad_packet:
         os_atomic_inc(&touch.bad,relaxed);
@@ -268,7 +287,11 @@ bad_packet:
         vt_sleep(8);
     }
 stopped:
-    vt_release_all(&touch.contacts,vt_emit_hid,NULL);
+    {
+        struct vt_frame empty={0};unsigned held=0;
+        for(unsigned i=0;i<VT_CONTACTS;i++)held|=touch.contacts.point[i].active;
+        if(held && !vt_emit_frame(&empty))printf("VERMEER TOUCH: HID release pending at stop\n");
+    }
     vt_restore();os_atomic_store(&touch.stage,VT_STOPPED,relaxed);vt_status();
     thread_terminate(current_thread());
 }

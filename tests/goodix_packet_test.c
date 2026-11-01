@@ -61,6 +61,8 @@ int main(void)
     assert(output.point[0].x==1439 && output.point[0].y==3199);
     vt_apply(&state,&output,emit,0);vt_release_all(&state,emit,0);assert(downs==3 && ups==3);
     assert(vt_decode(p,18,0,65535,&output)==VT_BAD);assert(vt_decode(p,18,65536,65535,&output)==VT_BAD);
+    p[0]=0xc0;seal(p);saved=output;
+    assert(vt_decode(p,18,32767,65535,&output)==VT_OTHER && !memcmp(&saved,&output,sizeof(saved)));
     uint32_t rng=51;
     uint8_t random_info[1024];
     for(unsigned i=0;i<50000;i++) {

@@ -11,7 +11,10 @@ static uint32_t read_reg(void *ctx,unsigned r)
 {
     struct mock *m=ctx;
     if(r==VG_STATUS)return m->active;
-    if(r==VG_IRQ)return m->fault==1 && m->active?8:m->done;
+    if(r==VG_IRQ) {
+        if(m->fault==5 && m->n && m->pauses<4000)return 0;
+        return m->fault==1 && m->active?8:m->done;
+    }
     if(r==VG_TX_COUNT)return m->fault==2?33:0;
     if(r==VG_RX_COUNT) {
         unsigned words=m->qtail-m->qhead;
@@ -62,12 +65,17 @@ int main(void)
             assert(b.failed);unsigned writes=m.writes;
             assert(!vg_transfer(&b,tx,rx,131));assert(m.writes==writes);
         }
-        assert(m.pauses<=2700);
+        assert(m.pauses<=vg_transfer_polls(131)+200);
     }
     struct mock m={0};struct vg_bus b=bus(&m);
     assert(!vg_transfer(&b,tx,rx,1033) && m.writes==0);
     assert(!vg_transfer(&b,tx,rx,0) && m.writes==0);
     assert(!vg_transfer(NULL,tx,rx,1));
     b.tx_depth=1;assert(!vg_transfer(&b,tx,rx,1) && m.writes==0);
+    assert(vg_transfer_polls(1032)==26300 && vg_transfer_polls(8)<1000);
+    assert(vg_transfer_polls(1033)==0);
+    struct mock slow={0};slow.fault=5;struct vg_bus sb=bus(&slow);
+    assert(vg_transfer(&sb,tx,rx,1032) && !memcmp(tx,rx,1032));
+    assert(slow.pauses>=4000 && !sb.failed);
     puts("GENI FIFO 1..1032 byte tails, errors, impossible counts, timeout and retired transport: PASS");
 }

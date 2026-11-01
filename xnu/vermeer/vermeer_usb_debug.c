@@ -390,8 +390,8 @@ static bool identity(void)
     vm_offset_t s=u.smmu;
     uint32_t id0=read_reg(s,0x20),id1=read_reg(s,0x24),id2=read_reg(s,0x28),ctl=read_reg(s,0);
     printf("VERMEER USB: SMMU id0=%08x id1=%08x id2=%08x ctl=%08x\n",id0,id1,id2,ctl);
-    if (id0!=0x4c017e69 || id1!=0x60000046 || ctl!=0x00280406 || id2!=0x5111) {
-        printf("VERMEER USB: exact SMMU identity/control gate refused; mappings unchanged\n");return false;
+    if (!vusb_smmu_layout(id0,id1,id2,ctl)) {
+        printf("VERMEER USB: verified SMMU layout/control gate refused; mappings unchanged\n");return false;
     }
     unsigned matches=0;uint32_t route=0;
     for (unsigned i=0;i<105;i++) if (vusb_stream_match(read_reg(s,0x800+4*i))) {

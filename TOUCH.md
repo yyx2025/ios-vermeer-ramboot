@@ -35,8 +35,11 @@ native positions map to the1440x3200 physical panel; existing HID translation
 maps that panel to the centered1125x2436 iOS canvas.
 
 Header, contact count, unique finger IDs, type, coordinates and payload checksum
-are validated before publishing any part of a frame. Removed contacts release
-first. Duplicate stationary frames do not generate repeated events. The only
+are validated before publishing any part of a frame. Every physical report is
+now one complete HID collection, including active and released contacts. Failed
+event or child-array allocation leaves the previous state intact and retries
+the retained frame for up to one second. Duplicate stationary frames do not
+generate repeated events. The only
 controller data write clears the verified event status after a valid report.
 Unknown request/stylus formats are not treated as fingers. A bus error retires
 the transport; repeated malformed reports stop it and release held contacts.
@@ -47,6 +50,32 @@ Host tests cover malformed/truncated packets, variable IC tables, native-axis
 scaling, multi-contact release,1..1032-byte FIFO transfers and tails, impossible
 FIFO counts, error/timeout retirement. These checks cannot establish rail state,
 firmware compatibility, electrical communication, IRQ behavior or real touch.
+
+## 2026-11-02 desktop/touch priority update
+
+GPU acceleration and cellular integration are outside this candidate. The
+centered 1125x2436 canvas keeps a contact's initial edge classification until
+release, using the documented HID FromEdgeTip flag for touches originating
+within 48 pixels of a canvas edge or in the physical black margins. A touch
+that begins in the center does not become an edge touch merely by moving there.
+
+SPI transfer deadlines scale with byte count (20 us polls, 16 kbit/s minimum
+budget plus 10 ms overhead; at most 526 ms). The old fixed 50 ms budget could
+expire while reading long IC information on the inherited clock divided by128.
+Malformed or unsupported controller request/gesture events are not finger
+events. They stop with a specific diagnostic instead of an endless ready loop;
+no configuration upload or reset sequence is invented.
+
+The actual included HID implementation is tested with failures at each parent,
+child and child-array allocation, verifying no partial dispatch, lost release,
+state advance on failure, leaks or duplicate stationary events. These software
+checks do not replace a physical touch test.
+
+USB still requires the exact supported SMMU register geometry, the unique SID40
+route and an identity/bypass context. Only sCR0 fault-reporting enable bits1/2/4/5
+may differ from the saved value; all translation/control bits remain checked.
+The SMMU is never reprogrammed. This removes rejection solely for a diagnostic
+interrupt setting; it cannot fix an actually translated or inaccessible route.
 
 Protocol/register references (no binary firmware included):
 

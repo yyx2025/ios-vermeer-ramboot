@@ -16,6 +16,11 @@
 #define VG_TX_COUNT 0x800u
 #define VG_RX_COUNT 0x804u
 #define VG_ERRORS (0x0eu | (3u<<24) | (3u<<28))
+/* SE4 uses the inherited clock divided by 128. A fixed 50 ms budget could
+ * expire during a valid long IC-info read. Allow 20 us polling intervals
+ * for 16 kbit/s wire throughput plus 10 ms overhead, bounded to <530 ms. */
+static inline unsigned vg_transfer_polls(unsigned bytes)
+{return bytes<=1032?500u+25u*bytes:0;}
 struct vg_bus {
     void *ctx;
     uint32_t (*read)(void *,unsigned);
@@ -82,7 +87,7 @@ static inline int vg_transfer(struct vg_bus *b,const uint8_t *tx,uint8_t *rx,uns
      */
     vg_wr(b,VG_CMD,(3u<<27)|4u);
     unsigned sent=0,received=0;int ok=0;
-    for(unsigned i=0;i<2500;i++) {
+    for(unsigned i=0;i<vg_transfer_polls(n);i++) {
         uint32_t irq=vg_rd(b,VG_IRQ);
         b->last_irq=irq;
         if(irq&VG_ERRORS)break;

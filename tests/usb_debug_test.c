@@ -67,6 +67,16 @@ int main(void)
     assert(vusb_route_identity(0,0x10000,0));
     assert(!vusb_route_identity(0,0x10000,1));
     assert(!vusb_route_identity(0,0,0));assert(!vusb_route_identity(0x20000,0,0));
+    assert(vusb_smmu_layout(0x4c017e69,0x60000046,0x5111,0x280406));
+    for(unsigned bits=0;bits<64;bits++) {
+        uint32_t ctl=0x280406u^(uint32_t)bits;
+        assert(vusb_smmu_layout(0x4c017e69,0x60000046,0x5111,ctl)==!(bits&~0x36u));
+    }
+    for(unsigned bit=6;bit<32;bit++)
+        assert(!vusb_smmu_layout(0x4c017e69,0x60000046,0x5111,0x280406u^(1u<<bit)));
+    assert(!vusb_smmu_layout(0x4c017e68,0x60000046,0x5111,0x280406));
+    assert(!vusb_smmu_layout(0x4c017e69,0x60000047,0x5111,0x280406));
+    assert(!vusb_smmu_layout(0x4c017e69,0x60000046,0x5110,0x280406));
     puts("USB RAM ring, CDC descriptors, request bounds, high DMA and identity routing: PASS");
     return 0;
 }

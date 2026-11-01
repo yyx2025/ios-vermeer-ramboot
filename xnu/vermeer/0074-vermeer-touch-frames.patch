@@ -1,0 +1,152 @@
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -17,6 +17,7 @@
+  * every N seconds, to test the event path without input hardware.
+  */
+ #include <IOKit/IOLib.h>
++#include "vermeer_touch_frame.h"
+ #include <machine/atomic.h>
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOTimerEventSource.h>
+@@ -354,15 +355,15 @@
+ public:
+ 	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	void touch(int finger, bool down, int x, int y);
++	int frame(const struct vt_frame *);
+ protected:
+ 	virtual UInt32 getPrimaryUsagePage() APPLE_KEXT_OVERRIDE { return kHIDPage_Digitizer; }
+ 	virtual UInt32 getPrimaryUsage() APPLE_KEXT_OVERRIDE { return kHIDUsage_Dig_TouchScreen; }
+ 	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 2; }
+ private:
+ 	IOLock *fLock;
+-	bool fDown[SWEET_TOUCH_FINGERS];
+-	IOFixed fX[SWEET_TOUCH_FINGERS];
+-	IOFixed fY[SWEET_TOUCH_FINGERS];
++	struct vt_frame fPhysical;
++	struct vth_state fFrameState;
+ };
+ OSDefineMetaClassAndStructors(SweetHIDTouch, IOHIDEventService);
+ 
+@@ -423,6 +424,8 @@
+ 	if (!fLock || !IOHIDEventService::start(provider)) {
+ 		return false;
+ 	}
++	bzero(&fPhysical, sizeof(fPhysical));
++	bzero(&fFrameState, sizeof(fFrameState));
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -431,100 +434,13 @@
+ 	os_atomic_store(&gSweetTouch, this, release);
+ 	registerService();
+ 	IOLog("SWEET HID: touch registered\n");
++	IOLog("VERMEER HID: atomic physical frames and canvas-edge origin v2\n");
+ 	return true;
+ }
+ 
+ extern "C" void vermeer_debug_input_record(int);
+ 
+-void
+-SweetHIDTouch::touch(int finger, bool down, int x, int y)
+-{
+-	vermeer_debug_input_record(0);
+-	uint64_t now = mach_absolute_time();
+-	IOHIDEvent *collection;
+-	bool any = false;
+-
+-	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+-		return;
+-	}
+-	x = x < 0 ? 0 : (x > 1439 ? 1439 : x);
+-	y = y < 0 ? 0 : (y > 3199 ? 3199 : y);
+-
+-	IOLockLock(fLock);
+-	bool was = fDown[finger];
+-	/* Translate physical panel coordinates into the centered UIKit canvas. */
+-	int32_t lx = x - (1440 - 1125) / 2, ly = y - (3200 - 2436) / 2;
+-	lx = lx < 0 ? 0 : (lx > 1124 ? 1124 : lx);
+-	ly = ly < 0 ? 0 : (ly > 2435 ? 2435 : ly);
+-	IOFixed nx = (IOFixed)(((int64_t)lx << 16) / 1125);
+-	IOFixed ny = (IOFixed)(((int64_t)ly << 16) / 2436);
+-	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+-	if (was == down && !moved) {
+-		IOLockUnlock(fLock);
+-		return;
+-	}
+-
+-	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
+-	if (!collection) {
+-		IOLockUnlock(fLock);
+-		return;
+-	}
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);
+-
+-	UInt32 cmask = 0;
+-	for (int i = 0; i < SWEET_TOUCH_FINGERS; i++) {
+-		bool d = (i == finger) ? down : fDown[i];
+-		if (i != finger && !d) {
+-			continue;
+-		}
+-		IOFixed fx = (i == finger && down) ? nx : fX[i];
+-		IOFixed fy = (i == finger && down) ? ny : fY[i];
+-		IOHIDEvent *child = IOHIDEvent::digitizerEvent(now, (UInt32)i + 2, kIOHIDDigitizerTransducerTypeFinger,
+-		    d, d ? 1 : 0, fx, fy);
+-		if (!child) {
+-			continue;
+-		}
+-		UInt32 mask = 0;
+-		if (i == finger) {
+-			if (was != down) {
+-				mask |= kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventRange;
+-			}
+-			if (moved) {
+-				mask |= kIOHIDDigitizerEventPosition;
+-			}
+-			if (!was && down) {
+-				mask |= kIOHIDDigitizerEventIdentity;
+-			}
+-		}
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i);
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerIdentity, i + 2);
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerTouch, d);
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, mask);
+-		collection->appendChild(child);
+-		child->release();
+-		cmask |= mask;
+-		any |= d;
+-	}
+-	fDown[finger] = down;
+-	if (down) {
+-		fX[finger] = nx;
+-		fY[finger] = ny;
+-	}
+-	collection->setFixedValue(kIOHIDEventFieldDigitizerX, nx);
+-	collection->setFixedValue(kIOHIDEventFieldDigitizerY, ny);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerRange, any);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerTouch, any);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, cmask);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerButtonMask, any ? 1 : 0);
+-	IOLockUnlock(fLock);
+-
+-	if (was != down) {
+-		IOLog("SWEET HID: touch %d %s at %d,%d\n", finger, down ? "down" : "up", x, y);
+-	}
+-	dispatchEvent(collection);
+-	vermeer_debug_input_record(1);
+-	collection->release();
+-}
++#include "vermeer_hid_frame_impl.h"
+ 
+ /* key: 0 power (side button), 1 volume up, 2 volume down, 3 home */
+ extern "C" void
+@@ -555,3 +471,10 @@
+ {
+ 	return os_atomic_load(&gSweetTouch, acquire) != NULL;
+ }
++
++extern "C" int
++sweet_hid_touch_frame(const struct vt_frame *frame)
++{
++	SweetHIDTouch *service = os_atomic_load(&gSweetTouch, acquire);
++	return service ? service->frame(frame) : 0;
++}

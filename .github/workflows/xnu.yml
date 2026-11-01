@@ -51,10 +51,12 @@ jobs:
       - name: Check storage bounds and address encoding
         run: |
           mkdir -p host-test
-          for test in gpt dma media_policy usb_debug sample_images migration_transaction frame_policy goodix_packet geni_spi touch_clock ram_layout; do
+          for test in gpt dma media_policy usb_debug sample_images migration_transaction frame_policy goodix_packet geni_spi touch_clock touch_frame ram_layout; do
             clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g "tests/${test}_test.c" -o "host-test/$test"
             "host-test/$test"
           done
+          clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/touch_hid_test.cpp -o host-test/touch_hid
+          host-test/touch_hid
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g tests/ram_receive_test.c xnu/vermeer/vermeer_ram_receive.c -o host-test/ram_receive
           host-test/ram_receive
           python3 tests/gui_profile_test.py
