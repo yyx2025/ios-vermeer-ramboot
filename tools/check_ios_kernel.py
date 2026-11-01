@@ -36,7 +36,10 @@ if '--ram-stream' in sys.argv:
     stream = (b'vermeer_ram_stream', b'VMRC0001', b'VMRX0001', b'VMRAM001',
               b'VERMEER RAM: READY VMRX0001', b'complete packed SHA256/index/HFS header verified',
               b'compressed md0 registered', b'external RAM mapped', b'VMRAM %s %u %llu',
-              b'verified SMMU layout/control gate refused')
+              b'verified SMMU layout/control gate refused',
+              b'starting USB before network initialization',
+              b'network initialization complete; finishing checked root receive',
+              b'VERMEER NET: interface=%s pending=%u', b'VERMEER NET: DLIL pending=%u')
     missing += [s.decode() for s in stream if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))

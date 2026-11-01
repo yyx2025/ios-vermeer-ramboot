@@ -18,4 +18,9 @@ with tempfile.TemporaryDirectory() as tmp:
                    '1125x2436', '1440x3200'):
         assert wanted in patches, wanted
     assert 'mounting dirty non-journaled root read-write' not in patches
+    assert (out/'0075-vermeer-early-usb-network.patch').is_file()
+    for wanted in ('starting USB before network initialization',
+                   'VERMEER NET: interface=%s pending=%u',
+                   'VERMEER NET: DLIL pending=%u'):
+        assert wanted in patches, wanted
 print('RAM GUI profile isolates physical storage and retains GUI/USB/touch patches: PASS')

@@ -39,6 +39,8 @@ static vm_offset_t area,cache,page_index;
 static _Atomic int ready,receive_failed;
 static _Atomic uint64_t receive_progress;
 static int sleep_channel;
+/* Called only by the BSD bootstrap thread. Never restart an owned DMA path. */
+static int start_attempted,start_error;
 LCK_GRP_DECLARE(stream_group,"vermeer-ram-root");
 LCK_MTX_DECLARE(stream_lock,&stream_group);
 extern dev_t mdevadd(int,uint64_t,unsigned int,int);
@@ -49,6 +51,7 @@ extern void vermeer_usb_debug_start(void);
 extern int vermeer_usb_running(void);
 extern void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
 int vermeer_ram_stream_boot(void);
+int vermeer_ram_stream_start(void);
 int vermeer_packed_active(int);
 int vermeer_packed_buf(struct buf *,uint64_t,void *);
 int vermeer_packed_uio(struct uio *);
@@ -113,10 +116,8 @@ static int receiver_bytes(const void *data,unsigned n)
     return result<0?-1:(receive.complete?1:0);
 }
 
-int vermeer_ram_stream_boot(void)
+static int start_receiver(void)
 {
-    int enabled=0;
-    if (!PE_parse_boot_argn("vermeer_ram_stream",&enabled,sizeof(enabled)) || enabled!=1)return 0;
     DTEntry chosen;const void *blob=NULL;unsigned size=0;
     if (SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess ||
         SecureDTGetProperty(chosen,"vermeer-ram-config",&blob,&size)!=kSuccess || size!=sizeof(config))return EINVAL;
@@ -132,12 +133,14 @@ int vermeer_ram_stream_boot(void)
      * Use normal coherent RAM attributes, never ml_io_map's device attributes
      * or the small early-I/O submap, for multi-GiB compressed bytes.
      */
+    printf("VERMEER RAM: reserving external root aperture before networking\n");
     if (kmem_alloc(kernel_map,&area,STREAM_BYTES,KMA_DATA|KMA_PAGEABLE|KMA_PERMANENT,
         VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS ||
         kmem_alloc(kernel_map,&cache,VRS_BLOCK,KMA_DATA|KMA_ZERO|KMA_PERMANENT,
         VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS ||
         kmem_alloc(kernel_map,&page_index,(VRS_MAX_LOGICAL/VRS_PAGE)*sizeof(uint32_t),
         KMA_DATA|KMA_ZERO|KMA_PERMANENT,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS)return ENOMEM;
+    printf("VERMEER RAM: mapping external root aperture\n");
     if (pmap_map(area,STREAM_BASE,STREAM_BASE+STREAM_BYTES,VM_PROT_READ|VM_PROT_WRITE,
         VM_WIMG_COPYBACK)!=area+STREAM_BYTES)return EIO;
     printf("VERMEER RAM: external RAM mapped, base=%llx bytes=%llx; XNU allocator remains 2GiB\n",
@@ -147,6 +150,25 @@ int vermeer_ram_stream_boot(void)
     vermeer_usb_set_ram_receiver(receiver_bytes);vermeer_usb_debug_start();
     if (!vermeer_usb_running())return ENXIO;
     printf("VERMEER RAM: READY VMRX0001; waiting for checked complete root; no storage writes\n");
+    return 0;
+}
+int vermeer_ram_stream_start(void)
+{
+    int enabled=0;
+    if (!PE_parse_boot_argn("vermeer_ram_stream",&enabled,sizeof(enabled)) || enabled!=1)return 0;
+    if (start_attempted)return start_error;
+    start_attempted=1;start_error=EIO;
+    printf("VERMEER RAM: starting USB before network initialization\n");
+    start_error=start_receiver();
+    return start_error;
+}
+int vermeer_ram_stream_boot(void)
+{
+    int enabled=0;
+    if (!PE_parse_boot_argn("vermeer_ram_stream",&enabled,sizeof(enabled)) || enabled!=1)return 0;
+    int error=vermeer_ram_stream_start();
+    if(error)return error;
+    printf("VERMEER RAM: network initialization complete; finishing checked root receive\n");
     unsigned idle=0;uint64_t previous=0;
     while (!ready && !receive_failed && idle<10) {
         (void)tsleep(&sleep_channel,PZERO,"ramroot",60*hz);

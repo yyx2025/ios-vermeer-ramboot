@@ -157,6 +157,7 @@ jobs:
         if: ${{ success() && (env.PROFILE == 'vermeer-ios' || env.PROFILE == 'vermeer-ios-gui' || env.PROFILE == 'vermeer-ios-ram-gui') }}
         run: |
           if [ "$PROFILE" = vermeer-ios-ram-gui ]; then
+            python3 tools/check_ram_startup.py dxb/xnu
             python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui --ram-only --ram-stream
           elif [ "$PROFILE" = vermeer-ios-gui ]; then
             python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui

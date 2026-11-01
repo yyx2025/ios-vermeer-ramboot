@@ -72,6 +72,7 @@ def prepare(destination):
         packed_sources.append(new_file('bsd/dev/lzfse/'+name,(ROOT/'xnu/vermeer/lzfse'/name).read_text()))
     (destination/'0071-vermeer-packed-ram-source.patch').write_text(''.join(packed_sources))
     (destination/'0072-vermeer-packed-ram-hook.patch').write_text((ROOT/'xnu/vermeer/0072-vermeer-packed-ram-hook.patch').read_text())
+    (destination/'0075-vermeer-early-usb-network.patch').write_text((ROOT/'xnu/vermeer/0075-vermeer-early-usb-network.patch').read_text())
     added = '\n'.join(p.read_text(errors='surrogateescape') for p in destination.glob('*.patch'))
     for forbidden in ('+++ b/bsd/dev/sweet_ufs.c', '+++ b/bsd/dev/vermeer_ufs',
                       'SWEETLOG', 'vermeer_ufs_ios_rootdev', 'SCSI_WRITE', 'ufshcd_queuecommand'):

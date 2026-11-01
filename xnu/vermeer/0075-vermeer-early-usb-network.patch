@@ -1,0 +1,53 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -747,6 +747,15 @@
+ 	bsd_init_kprintf("calling psem_cache_init\n");
+ 	psem_cache_init();
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* CDC and its bounded receiver have no IP interface dependency.
++	 * Make the USB log available before ifnet startup can block.
++	 * Root registration/mount remains after normal network init. */
++	extern int vermeer_ram_stream_start(void);
++	int early_usb_error = vermeer_ram_stream_start();
++	if (early_usb_error) panic("VERMEER RAM: early USB receive setup failed: %d; storage untouched", early_usb_error);
++#endif
++
+ 	/*
+ 	 * Initialize protocols.  Block reception of incoming packets
+ 	 * until everything is ready.
+--- a/bsd/net/dlil.c
++++ b/bsd/net/dlil.c
+@@ -2705,8 +2705,15 @@
+ 	while (dlil_pending_thread_cnt != 0) {
+ 		DLIL_PRINTF("%s: Waiting for all the create dlil kernel "
+ 		    "threads to get scheduled at least once.\n", __func__);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		struct timespec wait = {5, 0};
++		printf("VERMEER NET: DLIL pending=%u\n", dlil_pending_thread_cnt);
++		(void) msleep(&dlil_pending_thread_cnt, &dlil_thread_sync_lock,
++		    (PZERO - 1), __func__, &wait);
++#else
+ 		(void) msleep(&dlil_pending_thread_cnt, &dlil_thread_sync_lock,
+ 		    (PZERO - 1), __func__, NULL);
++#endif
+ 		LCK_MTX_ASSERT(&dlil_thread_sync_lock, LCK_ASSERT_OWNED);
+ 	}
+ 	lck_mtx_unlock(&dlil_thread_sync_lock);
+@@ -9078,8 +9085,16 @@
+ 		DLIL_PRINTF("%s: Waiting for all kernel threads created for "
+ 		    "interface %s to get scheduled at least once.\n",
+ 		    __func__, ifp->if_xname);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		struct timespec wait = {5, 0};
++		printf("VERMEER NET: interface=%s pending=%u\n",
++		    ifp->if_xname, ifp->if_threads_pending);
++		(void) msleep(&ifp->if_threads_pending, &ifp->if_ref_lock, (PZERO - 1),
++		    __func__, &wait);
++#else
+ 		(void) msleep(&ifp->if_threads_pending, &ifp->if_ref_lock, (PZERO - 1),
+ 		    __func__, NULL);
++#endif
+ 		LCK_MTX_ASSERT(&ifp->if_ref_lock, LCK_ASSERT_OWNED);
+ 	}
+ 	lck_mtx_unlock(&ifp->if_ref_lock);

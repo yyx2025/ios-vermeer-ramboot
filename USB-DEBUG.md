@@ -1,5 +1,27 @@
 # K70 USB debug console
 
+## RAM startup ordering after the 2026-11-02 failed session
+
+The user reported two successful fastboot downloads/boot commands followed by
+no K70DBG004 enumeration, with the handset remaining at `ifnet_attach: Waiting
+for all kernel threads created for interface ...`. The interface name was not
+readable. This is a network startup wait; it does not establish a Windows
+driver failure or identify the stalled thread. The previous RAM receiver ran
+after network initialization, so it could not expose logs from this wait.
+
+The RAM profile now sets up the checked receiver and starts CDC before
+`dlil_init`, after the existing BSD memory/time initialization. The same guarded
+RAM mapping, SMMU/clock predicates, checksums and single DMA owner apply. Later
+root registration still waits for normal network initialization and complete,
+verified root reception. Re-entering startup returns its saved result and does
+not reset the controller or allocate a second receiver.
+
+DLIL/interface startup keeps its original pending-thread predicates and locks.
+Five-second timed sleeps add short `VERMEER NET` lines with the actual interface
+name and pending count. A timeout never marks an unready interface as attached.
+This change makes the pre-USB stopping point observable; it is not proof that
+the underlying thread stall, handset USB or Apple desktop is fixed.
+
 Experimental opt-in CDC ACM serial interface, integrated with the iOS profile.
 Hardware checkpoint2026-10-21: integrated004 (source `f0aec9c`,
 Actions39540409885) enumerated with Windows Usbser as COM6, streamed early
