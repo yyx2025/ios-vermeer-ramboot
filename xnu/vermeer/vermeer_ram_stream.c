@@ -13,11 +13,14 @@
 #include <sys/uio.h>
 #include <kern/locks.h>
 #include <kern/kalloc.h>
+#include <kern/clock.h>
+#include <machine/machine_routines.h>
 #include <vm/vm_kern.h>
 #include <vm/pmap.h>
 #include <libkern/crypto/sha2.h>
 #include "vermeer_packed_store.h"
 #include "vermeer_ram_receive.h"
+#include "vermeer_ram_pump.h"
 #include "lzfse/lzfse_internal.h"
 
 #define STREAM_BASE UINT64_C(0x940000000)
@@ -41,6 +44,7 @@ static _Atomic uint64_t receive_progress;
 static int sleep_channel;
 /* Called only by the BSD bootstrap thread. Never restart an owned DMA path. */
 static int start_attempted,start_error;
+static int receive_prepared;
 LCK_GRP_DECLARE(stream_group,"vermeer-ram-root");
 LCK_MTX_DECLARE(stream_lock,&stream_group);
 extern dev_t mdevadd(int,uint64_t,unsigned int,int);
@@ -49,6 +53,11 @@ extern dev_t mdevadd(int,uint64_t,unsigned int,int);
 extern vm_map_address_t pmap_map(vm_map_address_t,vm_offset_t,vm_offset_t,vm_prot_t,unsigned int);
 extern void vermeer_usb_debug_start(void);
 extern int vermeer_usb_running(void);
+extern int vermeer_usb_ram_step(void);
+extern int vermeer_usb_connected(void);
+extern int vermeer_usb_ram_handoff(void);
+extern int vermeer_usb_logs_drained(void);
+extern void vermeer_usb_busy_wait(unsigned);
 extern void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
 int vermeer_ram_stream_boot(void);
 int vermeer_ram_stream_start(void);
@@ -112,8 +121,36 @@ static void receive_reply(void *ctx,uint32_t seq,uint64_t received,int error)
 static int receiver_bytes(const void *data,unsigned n)
 {
     if (!data) { receive_failed=1;wakeup(&sleep_channel);return -1; }
+    /* CDC can enumerate while the aperture is being mapped. No bytes may
+     * reach it until mapping completes and READY is printed. */
+    if (!receive_prepared) { receive_failed=1;return -1; }
     int result=vrx_feed(&receive,data,n);
     return result<0?-1:(receive.complete?1:0);
+}
+
+static int pump_step(void *ctx) { (void)ctx;return vermeer_usb_ram_step(); }
+static int pump_state(void *ctx)
+{
+    if (receive_failed || !vermeer_usb_running())return -1;
+    return ctx?ready:vermeer_usb_connected();
+}
+static uint64_t pump_progress(void *ctx) { return ctx?receive_progress:0; }
+static int pump_drain_state(void *ctx)
+{
+    (void)ctx;
+    if (receive_failed || !vermeer_usb_running())return -1;
+    return vermeer_usb_logs_drained();
+}
+static uint64_t pump_now(void *ctx) { (void)ctx;return mach_absolute_time(); }
+static void pump_idle(void *ctx) { (void)ctx;vermeer_usb_busy_wait(1000); }
+static int pump_wait(int receiving,unsigned seconds)
+{
+    uint64_t ticks;
+    clock_interval_to_absolutetime_interval(seconds,NSEC_PER_SEC,&ticks);
+    struct vrp_ops ops={receiving?(void *)&receive:NULL,pump_step,receiving==2?pump_drain_state:pump_state,
+        pump_progress,pump_now,pump_idle};
+    int result=vrp_wait(&ops,ticks);
+    return result==VRP_COMPLETE?0:(result==VRP_TIMEOUT?ETIMEDOUT:EIO);
 }
 
 static int start_receiver(void)
@@ -128,6 +165,13 @@ static int start_receiver(void)
         config.packed_bytes>config.bytes-config.overlay_bytes ||
         ((config.packed_bytes+PAGE_MASK)&~(uint64_t)PAGE_MASK)>config.bytes-config.overlay_bytes)return EINVAL;
     printf("VERMEER RAM: VMRC0001 config accepted; VMRAM001 complete root expected\n");
+    struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
+    vrx_init(&receive,&ops);
+    vermeer_usb_set_ram_receiver(receiver_bytes);vermeer_usb_debug_start();
+    if (!vermeer_usb_running())return ENXIO;
+    printf("VERMEER RAM: polling CDC enumeration before root mapping/network; waiting for computer\n");
+    int error=pump_wait(0,240);
+    if (error)return error;
     /* This aperture is outside the retained 2GiB XNU physical allocator.
      * The shim supplies this ADT property only after the live 8GiB FDT guard.
      * Use normal coherent RAM attributes, never ml_io_map's device attributes
@@ -141,16 +185,28 @@ static int start_receiver(void)
         kmem_alloc(kernel_map,&page_index,(VRS_MAX_LOGICAL/VRS_PAGE)*sizeof(uint32_t),
         KMA_DATA|KMA_ZERO|KMA_PERMANENT,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS)return ENOMEM;
     printf("VERMEER RAM: mapping external root aperture\n");
-    if (pmap_map(area,STREAM_BASE,STREAM_BASE+STREAM_BYTES,VM_PROT_READ|VM_PROT_WRITE,
-        VM_WIMG_COPYBACK)!=area+STREAM_BYTES)return EIO;
+    /* Service control requests/logs between bounded mapping batches. Mapping
+     * stays cacheable and outside the 2GiB managed allocator. */
+    const uint64_t batch=UINT64_C(0x1000000);
+    for (uint64_t off=0;off<STREAM_BYTES;off+=batch) {
+        if (vermeer_usb_ram_step()<0)return EIO;
+        if (pmap_map(area+off,STREAM_BASE+off,STREAM_BASE+off+batch,
+            VM_PROT_READ|VM_PROT_WRITE,VM_WIMG_COPYBACK)!=area+off+batch)return EIO;
+        if (!((off+batch)&UINT64_C(0x3fffffff)))
+            printf("VERMEER RAM: mapped %llu/6 GiB\n",(off+batch)>>30);
+    }
     printf("VERMEER RAM: external RAM mapped, base=%llx bytes=%llx; XNU allocator remains 2GiB\n",
         config.base,config.bytes);
-    struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
-    vrx_init(&receive,&ops);
-    vermeer_usb_set_ram_receiver(receiver_bytes);vermeer_usb_debug_start();
-    if (!vermeer_usb_running())return ENXIO;
+    receive_prepared=1;
     printf("VERMEER RAM: READY VMRX0001; waiting for checked complete root; no storage writes\n");
-    return 0;
+    error=pump_wait(1,600);
+    if (error)return error;
+    printf("VERMEER RAM: complete root received before networking; bootstrap poll v1\n");
+    /* Deliver the COMMIT ACK through the same polled owner before relying on
+     * worker scheduling for subsequent diagnostic output. */
+    error=pump_wait(2,30);
+    if (error)return error;
+    return vermeer_usb_ram_handoff()?EIO:0;
 }
 int vermeer_ram_stream_start(void)
 {
@@ -169,14 +225,6 @@ int vermeer_ram_stream_boot(void)
     int error=vermeer_ram_stream_start();
     if(error)return error;
     printf("VERMEER RAM: network initialization complete; finishing checked root receive\n");
-    unsigned idle=0;uint64_t previous=0;
-    while (!ready && !receive_failed && idle<10) {
-        (void)tsleep(&sleep_channel,PZERO,"ramroot",60*hz);
-        if (!vermeer_usb_running())return EIO;
-        uint64_t received=receive_progress;
-        if (received!=previous) { previous=received;idle=0; }
-        else idle++;
-    }
     if (!ready || receive_failed)return EIO;
     if (mdevadd(0,(uint64_t)cache>>12,(unsigned)(store.logical_bytes>>12),0)==NODEV)return ENXIO;
     printf("VERMEER RAM: compressed md0 registered; RAM writes limited to %llu bytes\n",config.overlay_bytes);

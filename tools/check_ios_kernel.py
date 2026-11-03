@@ -43,4 +43,9 @@ if '--ram-stream' in sys.argv:
     missing += [s.decode() for s in stream if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))
+if '--ram-poll' in sys.argv:
+    for marker in (b'bootstrap polling active; no scheduler dependency',
+                   b'complete root received before networking; bootstrap poll v1',
+                   b'polling CDC enumeration before root mapping/network'):
+        if marker not in data:raise SystemExit('Kernel lacks polled RAM receive: '+marker.decode())
 print('Final integrated kernel contains AKS, watchdog, crash reasons, root preparation and USB debug: PASS')

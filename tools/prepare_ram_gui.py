@@ -65,7 +65,7 @@ def prepare(destination):
     # remain intact. Default boot behavior is unchanged unless the guarded
     # vermeer_ram_stream boot argument and ADT configuration are both present.
     packed_files=['vermeer_packed_store.c','vermeer_packed_store.h',
-                  'vermeer_ram_receive.c','vermeer_ram_receive.h','vermeer_ram_stream.c']
+                  'vermeer_ram_receive.c','vermeer_ram_receive.h','vermeer_ram_pump.h','vermeer_ram_stream.c']
     packed_sources=[new_file('bsd/dev/'+name,(ROOT/'xnu/vermeer'/name).read_text()) for name in packed_files]
     for name in ('lzfse_decode_base.c','lzfse_fse.c','lzfse_fse.h','lzfse_internal.h',
                  'lzfse_tunables.h','lzvn_decode_base.c','lzvn_decode_base.h'):

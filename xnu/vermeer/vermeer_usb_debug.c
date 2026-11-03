@@ -31,7 +31,15 @@ void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
 int vermeer_usb_running(void);
 static int (*ram_receiver)(const void *,unsigned);
 static _Atomic int poll_started;
+/* 1: bootstrap caller; 2: USB worker. Ownership changes only once, after
+ * the complete root is received. A second caller never polls live DMA. */
+static _Atomic int poll_owner;
 static int ram_dma;
+int vermeer_usb_ram_step(void);
+int vermeer_usb_connected(void);
+int vermeer_usb_ram_handoff(void);
+int vermeer_usb_logs_drained(void);
+void vermeer_usb_busy_wait(unsigned usec);
 
 #define GCTL 0xc110
 #define GEVNTADRLO 0xc400
@@ -117,6 +125,15 @@ static void fail(const char *why)
     if (!u.failed && ram_receiver) (void)ram_receiver(NULL,0);
     u.failed=true;
 }
+void vermeer_usb_busy_wait(unsigned usec)
+{
+    /* XNU delay() may block a thread; its ARM spinning fallback uses WFE.
+     * Neither is suitable while establishing the first polled USB link.
+     * YIELD is a hint only and never waits for an interrupt/event. */
+    uint64_t ticks,start=mach_absolute_time();
+    clock_interval_to_absolutetime_interval(usec,NSEC_PER_USEC,&ticks);
+    while (mach_absolute_time()-start<ticks) __asm__ volatile("yield" ::: "memory");
+}
 static int epcmd(unsigned ep,unsigned cmd,uint32_t p0,uint32_t p1,uint32_t p2)
 {
     if (u.failed || ep>=6) return -1;
@@ -129,7 +146,7 @@ static int epcmd(unsigned ep,unsigned cmd,uint32_t p0,uint32_t p1,uint32_t p2)
             if ((cmd&15)==START) u.resource[ep]=(v>>16)&0x7f;
             return 0;
         }
-        delay(1);
+        vermeer_usb_busy_wait(1);
     }
     fail("endpoint command timeout"); return -1;
 }
@@ -318,6 +335,19 @@ static void transmit(void)
     if (n && !(n%u.mps)) { n--;u.cursor--; }
     if (n) { transfer(3,TX,n,T_NORMAL);u.tx_bytes+=n; }
 }
+static void reset_control(void)
+{
+    /* DWC3 databook 8.1.2 / Linux v6.1 reset handling: retain an armed
+     * SETUP, but terminate DATA/STATUS ownership before restarting EP0. */
+    if (u.phase==SETUP_PHASE)return;
+    for (unsigned ep=0;ep<2;ep++) {
+        if (!u.busy[ep])continue;
+        if (epcmd(ep,END|FORCE_REMOVE|(u.resource[ep]<<16),0,0,0))return;
+        u.busy[ep]=false;u.resource[ep]=0;
+    }
+    u.set_line=false;u.data_in=false;
+    stall();
+}
 static void event(uint32_t e)
 {
     if (e&1) {
@@ -325,6 +355,7 @@ static void event(uint32_t e)
         unsigned type=(e>>8)&15;
         if (type==1) {
             if (u.configured) { stop_data();fail("bus reset after configuration; reboot to reconnect");return; }
+            reset_control();if (u.failed)return;
             wr(DCFG,rd(DCFG)&~(127u<<3));printf("VERMEER USB: bus reset\n");
         } else if (type==2) {
             unsigned speed=rd(DSTS)&7;
@@ -361,11 +392,11 @@ static void event(uint32_t e)
         u.phase=STATUS_PHASE;transfer(ep,DATA,0,kind);
     }
 }
-static void usb_thread(void *arg __unused,wait_result_t result __unused)
+static void usb_poll_once(void)
 {
-    while (!u.failed) {
+    if (!u.failed) {
         unsigned count=rd(GEVNTCOUNT)&0xffff;
-        if (count>EVENT_SIZE || (count&3)) { fail("event ring size/alignment");break; }
+        if (count>EVENT_SIZE || (count&3)) { fail("event ring size/alignment");return; }
         if (count) {
             sync_dma(EVENTS,EVENT_SIZE);
             for (unsigned i=0;i<count && !u.failed;i+=4) {
@@ -376,12 +407,43 @@ static void usb_thread(void *arg __unused,wait_result_t result __unused)
             wr(GEVNTCOUNT,count);
         }
         transmit();
+    }
+}
+static void usb_thread(void *arg __unused,wait_result_t result __unused)
+{
+    while (!u.failed) {
+        usb_poll_once();
         uint64_t deadline;clock_interval_to_deadline(1,NSEC_PER_MSEC,&deadline);
         (void)assert_wait_deadline(&u.sleep_channel,THREAD_UNINT,deadline);
         thread_block(THREAD_CONTINUE_NULL);
     }
     wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
     thread_terminate(current_thread());
+}
+int vermeer_usb_ram_step(void)
+{
+    if (!poll_started || poll_owner!=1 || u.failed)return -1;
+    usb_poll_once();
+    if (u.failed) { wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return -1; }
+    return 0;
+}
+int vermeer_usb_connected(void) { return u.configured && u.dtr && !u.failed; }
+int vermeer_usb_logs_drained(void)
+{
+    return vermeer_usb_connected() && !u.busy[3] && u.cursor==vermeer_debug_total();
+}
+int vermeer_usb_ram_handoff(void)
+{
+    if (!poll_started || poll_owner!=1 || u.failed || ram_receiver)return -1;
+    /* The bootstrap caller must not invoke ram_step after this transition. */
+    poll_owner=2;
+    thread_t thread;
+    if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) {
+        fail("poll thread handoff");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return -1;
+    }
+    thread_deallocate(thread);
+    printf("VERMEER USB: bootstrap receive complete; log worker owns DMA\n");
+    return 0;
 }
 /* Require the exact known nonsecure SMMU layout and a unique identity route.
  * Never create mappings or weaken isolation just to make debug USB work. */
@@ -445,10 +507,10 @@ void vermeer_usb_debug_start(void)
      * descriptors. PHY configuration and global bus settings remain from ABL. */
     wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
     unsigned i;
-    for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
+    for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) vermeer_usb_busy_wait(1000);
     if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
     wr(DCTL,RESET);
-    for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+    for (i=0;i<500 && (rd(DCTL)&RESET);i++) vermeer_usb_busy_wait(1000);
     if (rd(DCTL)&RESET) { fail("controller reset timeout");return; }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
@@ -464,8 +526,14 @@ void vermeer_usb_debug_start(void)
     *(volatile uint32_t *)(qs+0x30)=ss|(1u<<24);
     __asm__ volatile("dsb sy" ::: "memory");
     wr(DEVTEN,7|(1u<<9)|(1u<<11));wr(DCTL,rd(DCTL)|RUN);
-    for (i=0;i<500 && (rd(DSTS)&HALTED);i++) delay(1000);
+    for (i=0;i<500 && (rd(DSTS)&HALTED);i++) vermeer_usb_busy_wait(1000);
     if (rd(DSTS)&HALTED) { fail("controller run timeout");return; }
+    if (ram_dma) {
+        poll_owner=1;poll_started=1;
+        printf("VERMEER USB: bootstrap polling active; no scheduler dependency; K70DBG004\n");
+        return;
+    }
+    poll_owner=2;
     thread_t thread;
     if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DCTL,rd(DCTL)&~RUN);return; }
     thread_deallocate(thread);

@@ -51,7 +51,7 @@ jobs:
       - name: Check storage bounds and address encoding
         run: |
           mkdir -p host-test
-          for test in gpt dma media_policy usb_debug sample_images migration_transaction frame_policy goodix_packet geni_spi touch_clock touch_frame ram_layout; do
+          for test in gpt dma media_policy usb_debug sample_images migration_transaction frame_policy goodix_packet geni_spi touch_clock touch_frame ram_layout ram_pump; do
             clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g "tests/${test}_test.c" -o "host-test/$test"
             "host-test/$test"
           done
@@ -61,6 +61,7 @@ jobs:
           host-test/ram_receive
           python3 tests/gui_profile_test.py
           python3 tests/ram_profile_test.py
+          python3 tests/usb_bootstrap_test.py
 
       - name: Fetch build script
         run: |

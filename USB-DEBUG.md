@@ -1,5 +1,35 @@
 # K70 USB debug console
 
+## 2026-11-03 polled complete-root startup candidate
+
+The user reports that `Start-iOS-EarlyUSB.cmd` still does not produce a USB
+device. No final handset register line or new capture is available yet, so the
+hardware stopping point is not established. The previous build is therefore a
+failed user-reported attempt, not a proven USB fix.
+
+The RAM profile now owns USB polling in the BSD bootstrap caller, waits for
+CDC configuration/DTR before mapping the 6 GiB root aperture, services USB
+between 16 MiB mapping batches, then receives and verifies the complete root
+before network initialization. It drains the COMMIT ACK before handing the
+existing DMA allocation to the log worker. Early bytes before READY are rejected.
+There is no second controller initialization or concurrent polling owner.
+
+All endpoint/halt/reset waits use the hardware counter with AArch64 YIELD.
+XNU's `delay()` can block a thread; its ARM spin fallback uses WFE. Those waits
+are unsuitable for establishing USB when timer/event delivery is uncertain.
+The new enumeration/receive pump never calls delay, WFE, tsleep or thread_block.
+Other XNU allocation/locking and later OS startup still need a working kernel.
+
+EP0 reset in DATA/STATUS terminates its active transfer before a STALL and
+fresh SETUP; an already armed SETUP is retained. Reset after configuration
+still stops the transfer rather than silently reusing in-flight RAM frames.
+Reference: Linux v6.1 DWC3 gadget reset handler and EP0 restart.
+
+Clocks, DWC identity, SMMU geometry/control, unique SID40 identity route, DMA
+width/contiguity and live FDT RAM guards are retained. This change cannot repair
+an unsupported PHY/SMMU state. Host tests and compilation are separate from
+physical enumeration, root COMMIT, Apple desktop and touch verification.
+
 ## RAM startup ordering after the 2026-11-02 failed session
 
 The user reported two successful fastboot downloads/boot commands followed by

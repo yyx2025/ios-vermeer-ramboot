@@ -12,6 +12,8 @@ import re
 import struct
 import time
 import zlib
+import os
+import subprocess
 from ram_stream_config import load_record, file_sha256
 
 FRAME = struct.Struct('<8sIIQIIQ32s')
@@ -72,7 +74,7 @@ class Reader:
 
     @staticmethod
     def check_failure(line):
-        if line.startswith('VMRAM ERROR') or 'VERMEER USB: stopped:' in line or 'pre-mount receive failed:' in line:
+        if line.startswith('VMRAM ERROR') or 'VERMEER USB: stopped:' in line or 'pre-mount receive failed:' in line or 'early USB receive setup failed:' in line:
             raise OSError(line)
 
     def ack(self, sequence, received, timeout):
@@ -117,6 +119,24 @@ def send_volume(port, reader, source, total, expected, timeout=30, progress=None
 
 def is_vermeer(port):
     return port.serial_number == 'K70DBG004' and port.vid == 0x1209 and port.pid == 1
+
+
+def usb_snapshot():
+    """Read only: distinguish no USB device from a device lacking its COM driver."""
+    from serial.tools import list_ports
+    record={'serial_ports':[{'port':p.device,'description':p.description,
+        'serial':p.serial_number,'vid':p.vid,'pid':p.pid} for p in list_ports.comports()]}
+    if os.name!='nt':return record
+    script="Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -match '^USB\\\\' -and ($_.ConfigManagerErrorCode -ne 0 -or $_.PNPDeviceID -match 'VID_1209|VID_18D1|VID_2717') } | Select-Object Name,PNPDeviceID,Status,ConfigManagerErrorCode | ConvertTo-Json -Compress"
+    try:
+        result=subprocess.run([str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'),
+            '-NoProfile','-NonInteractive','-Command',script],capture_output=True,text=True,
+            encoding='utf-8',errors='replace',timeout=20,creationflags=subprocess.CREATE_NO_WINDOW)
+        record['pnp_exit_code']=result.returncode
+        record['pnp_devices']=json.loads(result.stdout) if result.stdout.strip() else []
+    except (OSError,ValueError,subprocess.TimeoutExpired) as error:
+        record['pnp_read_error']=str(error)
+    return record
 
 
 def find_port(requested, timeout):
@@ -203,6 +223,12 @@ def main():
     except (OSError, ValueError, KeyError, KeyboardInterrupt) as error:
         result['error'] = str(error) or 'Interrupted by user'
         print('Stopped:', result['error'], flush=True)
+        if 'port' not in result:
+            try:
+                result['usb_snapshot']=usb_snapshot()
+                print('Saved Windows USB/COM state with this result; no drivers or settings changed.',flush=True)
+            except Exception as snapshot_error:
+                result['usb_snapshot_error']=str(snapshot_error)
     finally:
         report_path.write_text(json.dumps(result, indent=2), encoding='utf-8')
         print('Saved result:', report_path, flush=True)
