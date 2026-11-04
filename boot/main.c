@@ -9,6 +9,9 @@ extern void ram_map_dump(uintptr_t dtb);
 extern void usb_map_dump(uintptr_t dtb);
 #endif
 #define R(r) ({ uint64_t v; __asm__ volatile("mrs %0, " r : "=r"(v)); v; })
+#ifdef VERMEER_RAM_FASTBOOT
+extern int ram_fastboot_receive(uintptr_t);
+#endif
 
 static void reset_after(unsigned seconds)
 {
@@ -33,6 +36,9 @@ void probe_exception(uint64_t slot, uint64_t *regs)
     con_hex("ESR", R("esr_el1"));
     con_hex("ELR", R("elr_el1"));
     con_hex("FAR", R("far_el1"));
+#ifdef VERMEER_RAM_FASTBOOT
+    for (;;) __asm__ volatile("yield");
+#endif
     reset_after(90);
 }
 
@@ -46,6 +52,12 @@ void boot_main(uintptr_t fdt)
 #endif
     con_hex("IMAGE", (uintptr_t)boot_main);
     con_hex("FDT", fdt);
+#ifdef VERMEER_RAM_FASTBOOT
+    if (ram_fastboot_receive(fdt)) {
+        con_str("RESULT", "RAM receive stopped; keep this screen");
+        for (;;) __asm__ volatile("yield");
+    }
+#endif
 #ifdef VERMEER_USB_MAP_ONLY
     usb_map_dump(fdt);
 #elif defined(VERMEER_RAM_MAP_ONLY)
@@ -53,6 +65,10 @@ void boot_main(uintptr_t fdt)
     ram_map_dump(fdt);
 #else
     con_str("LOADER", loader_boot(fdt));
+#endif
+#ifdef VERMEER_RAM_FASTBOOT
+    con_str("RESULT", "XNU handoff stopped; keep this screen");
+    for (;;) __asm__ volatile("yield");
 #endif
     con_str("RESET", "in 90s; no partitions written");
     reset_after(90);

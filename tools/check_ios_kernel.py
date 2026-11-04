@@ -41,6 +41,13 @@ if '--ram-stream' in sys.argv:
               b'network initialization complete; finishing checked root receive',
               b'VERMEER NET: interface=%s pending=%u', b'VERMEER NET: DLIL pending=%u')
     missing += [s.decode() for s in stream if s not in data]
+if '--ram-preload' in sys.argv:
+    preload = (b'vermeer_ram_preloaded', b'vermeer-ram-preloaded',
+               b'loader supplied compressed root; no XNU USB receiver required',
+               b'verifying preloaded full-root SHA256 before use',
+               b'preloaded root ready; block decompression stays in RAM',
+               b'preloaded root setup failed: %d; storage untouched')
+    missing += [s.decode() for s in preload if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))
 if '--ram-poll' in sys.argv:

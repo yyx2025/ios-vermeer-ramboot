@@ -31,6 +31,7 @@ def main():
     p.add_argument('output',type=Path)
     p.add_argument('--checkpoint',action='store_true')
     p.add_argument('--ram-stream',action='store_true',help='ramdisk positional argument is the verified packed-root JSON; root is received over USB before mount')
+    p.add_argument('--ram-preload-fastboot',action='store_true',help='receive and verify the complete root in the shim before XNU; requires --ram-stream')
     p.add_argument('--ram-map-only',action='store_true',help='read bounded live FDT and return; no XNU jump')
     p.add_argument('--ram-read-only',action='store_true',help='after a live-FDT guard, sample 9 GiB using aligned reads only')
     p.add_argument('--ram-write-restore',action='store_true',help='test and restore 65536 sampled words in lower 8 GiB; no XNU or partition writes')
@@ -39,6 +40,8 @@ def main():
     p.add_argument('--product-adt',type=Path)
     p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
     a = p.parse_args()
+    if a.ram_preload_fastboot and not a.ram_stream:
+        raise ValueError('Pre-kernel Fastboot requires a complete packed-root record')
     if a.ram_stream and any((a.checkpoint,a.ram_map_only,a.ram_read_only,a.ram_write_restore,a.usb_checkpoint,a.usb_map_only)):
         raise ValueError('Complete-root RAM streaming is separate from checkpoint diagnostics')
     packed_record=packed_file=stream_config=None
@@ -62,9 +65,12 @@ def main():
     if not a.ram_stream and a.ramdisk.stat().st_size >= 0x80000000:
         raise ValueError('Root alone exceeds the retained 2 GiB window; multi-GiB streaming/mapping is not implemented yet')
     kernel = a.kernel.read_bytes()
+    if a.ram_preload_fastboot and b'loader supplied compressed root; no XNU USB receiver required' not in kernel:
+        raise ValueError('Kernel lacks the verified preloaded-root path')
     if not a.checkpoint:
         subprocess.run([sys.executable,str(ROOT/'tools/check_ios_kernel.py'),str(a.kernel),
-                        '--gui','--ram-only',*(['--ram-stream'] if a.ram_stream else [])],check=True)
+                        '--gui','--ram-only',*(['--ram-stream'] if a.ram_stream else []),
+                        *(['--ram-preload'] if a.ram_preload_fastboot else [])],check=True)
         if not a.product_adt: raise ValueError('GUI requires official D22AP product ADT')
         if not a.ram_stream:
             with a.ramdisk.open('rb') as f:
@@ -84,14 +90,18 @@ def main():
     if a.ram_stream:
         chosen=next(child for child in tree.children if child.name=='chosen')
         chosen.props.append(('vermeer-ram-config',0,stream_config))
+        if a.ram_preload_fastboot:
+            chosen.props.append(('vermeer-ram-preloaded',0,struct.pack('<I',1)))
     tree_path = out/'vermeer.adt'
     tree_path.write_bytes(adt.serialize(tree))
     args = 'debug=0xc serial=3 cpus=1 keepsyms=1 rd=md0'
     if a.usb_checkpoint:
         args += ' vermeer_usb=1 sweet_sample_names=-'
     if not a.checkpoint:
-        args += ' rootrw=1 ignition_level=1 vermeer_ram_only=1 vermeer_prepare_root=1 vermeer_migration_baseline=1 vermeer_usb=1'
+        args += ' rootrw=1 ignition_level=1 vermeer_ram_only=1 vermeer_prepare_root=1 vermeer_migration_baseline=1 vermeer_usb=1 vermeer_touch=1'
     if a.ram_stream: args += ' vermeer_ram_stream=1'
+    if a.ram_preload_fastboot:
+        args=args.replace('vermeer_usb=1','vermeer_usb=0')+' vermeer_ram_preloaded=1'
     blob,info = mkpayload.build(a.kernel,tree_path,args,None if a.ram_stream else a.ramdisk)
     mem = 0x80000000
     if int(info['kernel_end'],16)-int(info['virt_base'],16)+len(tree_path.read_bytes())+0x8000 > mem:
@@ -102,6 +112,10 @@ def main():
     build.mkdir(exist_ok=True)
     for src in (ROOT/'boot').iterdir():
         if src.is_file(): shutil.copy2(src,build/src.name)
+    if a.ram_preload_fastboot:
+        digest=bytes.fromhex(packed_record['packed_sha256'])
+        (build/'ram_fastboot_config.h').write_text('#include <stdint.h>\n#define RFB_ROOT_BYTES UINT64_C('+str(packed_record['packed_bytes'])+')\nstatic const uint8_t rfb_root_sha[32]={'+','.join(str(x) for x in digest)+'};\n')
+        shutil.copyfile(ROOT/'xnu/vermeer/vermeer_usb_protocol.h',build/'vermeer_usb_protocol.h')
     (build/'out').mkdir(exist_ok=True)
     (build/'out/payload.bin').write_bytes(blob)
     clang = a.llvm/'clang.exe'
@@ -111,7 +125,9 @@ def main():
     env = dict(os.environ)
     env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
     objects=[]
-    for source in ('entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c','usb_map.c'):
+    sources=['entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c','usb_map.c']
+    if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c']
+    for source in sources:
         target = 'out/'+Path(source).stem+'.o'
         subprocess.run([str(clang),'--target=aarch64-none-elf','-O2','-ffreestanding','-nostdlib',
                         '-fno-pic','-fno-pie','-mgeneral-regs-only','-mstrict-align','-fno-stack-protector',
@@ -120,12 +136,13 @@ def main():
                         *(['-DVERMEER_RAM_WRITE_RESTORE'] if a.ram_write_restore else []),
                         *(['-DVERMEER_USB_MAP_ONLY'] if a.usb_map_only else []),
                         *(['-DVERMEER_RAM_STREAM'] if a.ram_stream else []),
+                        *(['-DVERMEER_RAM_FASTBOOT'] if a.ram_preload_fastboot else []),
                         '-c',source,'-o',target],cwd=build,env=env,check=True)
         objects.append(target)
     # entry.S intentionally stores _end as the ARM64 image-size field.
     # Match upstream: the executable C code must have no absolute pointers.
-    relocs=subprocess.check_output([str(readelf),'-r','out/main.o','out/console.o',
-                                  'out/loader.o','out/fdt.o','out/ram_map.o','out/usb_map.o'],cwd=build,env=env,text=True)
+    relocation_objects=['out/'+Path(name).stem+'.o' for name in sources if name.endswith('.c')]
+    relocs=subprocess.check_output([str(readelf),'-r',*relocation_objects],cwd=build,env=env,text=True)
     if 'R_AARCH64_ABS64' in relocs:raise ValueError('Absolute relocation in freestanding shim')
     subprocess.run([str(ld),'-flavor','gnu','-m','aarch64elf','-T','link.ld',
                     '--build-id=none',*objects,'-o','out/shim.elf'],cwd=build,env=env,check=True)
@@ -137,6 +154,8 @@ def main():
     struct.pack_into('<IIII',header,8,len(image),0,struct.unpack_from('<I',stock,16)[0],1584)
     struct.pack_into('<I',header,40,4);header[44:56]=b'console=null'
     boot=header+image+bytes(-len(image)%4096)
+    if len(boot)>805306368:
+        raise ValueError('Image exceeds the measured K70 768 MiB temporary-download limit')
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.output.write_bytes(boot)
     report={'image':str(a.output.resolve()),'sha256':hashlib.sha256(boot).hexdigest(),'bytes':len(boot),
@@ -166,7 +185,14 @@ def main():
             'external_ram_base':hex(ram_stream_config.BASE),'external_ram_bytes':ram_stream_config.SIZE,
             'write_overlay_bytes':ram_stream_config.OVERLAY,'live_guard_bytes':0x200000000,
             'embedded_root_bytes':0,'usb_before_root_mount_implemented':True,
+            'physical_touch_requested':True,'physical_touch_hardware_verified':False,
             'full_ios_desktop_verified':False})
+    if a.ram_preload_fastboot:
+        report.update(root_receive_before_xnu=True,preloaded_root_sha256_in_xnu=True,
+                      fastboot_ram_serial='VERMEERRAM001',xnu_usb_required=False,
+                      windows_com_port_required=False,bootstrap_usb_polling=False,
+                      usb_start_before_network=True,root_receive_before_network=True,
+                      measured_abl_max_download_bytes=805306368,ram_chunk_bytes=67108864)
     a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))
 

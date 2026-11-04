@@ -165,13 +165,22 @@ static int start_receiver(void)
         config.packed_bytes>config.bytes-config.overlay_bytes ||
         ((config.packed_bytes+PAGE_MASK)&~(uint64_t)PAGE_MASK)>config.bytes-config.overlay_bytes)return EINVAL;
     printf("VERMEER RAM: VMRC0001 config accepted; VMRAM001 complete root expected\n");
-    struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
-    vrx_init(&receive,&ops);
-    vermeer_usb_set_ram_receiver(receiver_bytes);vermeer_usb_debug_start();
-    if (!vermeer_usb_running())return ENXIO;
-    printf("VERMEER RAM: polling CDC enumeration before root mapping/network; waiting for computer\n");
-    int error=pump_wait(0,240);
-    if (error)return error;
+    int preloaded=0,error=0;
+    PE_parse_boot_argn("vermeer_ram_preloaded",&preloaded,sizeof(preloaded));
+    if (preloaded) {
+        uint32_t value=0;
+        if (preloaded!=1 || SecureDTGetProperty(chosen,"vermeer-ram-preloaded",&blob,&size)!=kSuccess || size!=sizeof(value))return EINVAL;
+        memcpy(&value,blob,sizeof(value));if (value!=1)return EINVAL;
+        printf("VERMEER RAM: loader supplied compressed root; no XNU USB receiver required\n");
+    } else {
+        struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
+        vrx_init(&receive,&ops);
+        vermeer_usb_set_ram_receiver(receiver_bytes);vermeer_usb_debug_start();
+        if (!vermeer_usb_running())return ENXIO;
+        printf("VERMEER RAM: polling CDC enumeration before root mapping/network; waiting for computer\n");
+        error=pump_wait(0,240);
+        if (error)return error;
+    }
     /* This aperture is outside the retained 2GiB XNU physical allocator.
      * The shim supplies this ADT property only after the live 8GiB FDT guard.
      * Use normal coherent RAM attributes, never ml_io_map's device attributes
@@ -189,7 +198,7 @@ static int start_receiver(void)
      * stays cacheable and outside the 2GiB managed allocator. */
     const uint64_t batch=UINT64_C(0x1000000);
     for (uint64_t off=0;off<STREAM_BYTES;off+=batch) {
-        if (vermeer_usb_ram_step()<0)return EIO;
+        if (!preloaded && vermeer_usb_ram_step()<0)return EIO;
         if (pmap_map(area+off,STREAM_BASE+off,STREAM_BASE+off+batch,
             VM_PROT_READ|VM_PROT_WRITE,VM_WIMG_COPYBACK)!=area+off+batch)return EIO;
         if (!((off+batch)&UINT64_C(0x3fffffff)))
@@ -197,6 +206,21 @@ static int start_receiver(void)
     }
     printf("VERMEER RAM: external RAM mapped, base=%llx bytes=%llx; XNU allocator remains 2GiB\n",
         config.base,config.bytes);
+    if (preloaded) {
+        printf("VERMEER RAM: verifying preloaded full-root SHA256 before use\n");
+        SHA256_Init(&transfer_hash);
+        for (uint64_t off=0;off<config.packed_bytes;) {
+            uint64_t left=config.packed_bytes-off;
+            size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
+            SHA256_Update(&transfer_hash,(const void *)(area+off),n);off+=n;
+            if (!(off&UINT64_C(0x3fffffff)))printf("VERMEER RAM: verified %llu bytes\n",off);
+        }
+        error=receive_finish(NULL);
+        if (error)return error;
+        receive_prepared=1;
+        printf("VERMEER RAM: preloaded root ready; block decompression stays in RAM\n");
+        return 0;
+    }
     receive_prepared=1;
     printf("VERMEER RAM: READY VMRX0001; waiting for checked complete root; no storage writes\n");
     error=pump_wait(1,600);
@@ -214,7 +238,9 @@ int vermeer_ram_stream_start(void)
     if (!PE_parse_boot_argn("vermeer_ram_stream",&enabled,sizeof(enabled)) || enabled!=1)return 0;
     if (start_attempted)return start_error;
     start_attempted=1;start_error=EIO;
-    printf("VERMEER RAM: starting USB before network initialization\n");
+    int preloaded=0;PE_parse_boot_argn("vermeer_ram_preloaded",&preloaded,sizeof(preloaded));
+    if (preloaded)printf("VERMEER RAM: checking loader root before network initialization\n");
+    else printf("VERMEER RAM: starting USB before network initialization\n");
     start_error=start_receiver();
     return start_error;
 }

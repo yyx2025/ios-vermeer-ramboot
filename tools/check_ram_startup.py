@@ -22,5 +22,11 @@ assert stream.index('vermeer_usb_debug_start();',setup)<stream.index('kmem_alloc
 assert stream.index('pump_wait(0,240)',setup)<stream.index('pmap_map(area+off',setup)
 assert stream.index('receive_prepared=1;',setup)<stream.index('pump_wait(1,600)',setup)<stream.index('pump_wait(2,30)',setup)<stream.index('vermeer_usb_ram_handoff()',setup)
 assert 'tsleep(' not in stream and 'thread_block(' not in stream
+assert 'preloaded root setup failed: %d; storage untouched' in bsd
+assert 'if (!preloaded && vermeer_usb_ram_step()<0)' in stream
+assert 'vermeer-ram-preloaded' in stream
+preload=stream.index('if (preloaded) {',stream.index('pmap_map(area+off',setup))
+assert stream.index('SHA256_Init(&transfer_hash);',preload)<stream.index('receive_finish(NULL)',preload)<stream.index('return 0;',preload)<stream.index('pump_wait(1,600)',preload)
+print('Preloaded root: independent SHA gate before readiness and no XNU USB dependency: PASS')
 print('Bootstrap CDC enumeration before mapping, complete receive/COMMIT drain before networking: PASS')
 print('Actual patched startup: USB before network, root mount after initialization and complete receive, wait gates retained: PASS')
