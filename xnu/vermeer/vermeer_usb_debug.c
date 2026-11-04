@@ -24,10 +24,15 @@ extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
 extern unsigned vermeer_debug_copy(uint64_t *, char *, unsigned);
 extern uint64_t vermeer_debug_total(void);
 extern uint64_t vermeer_debug_dropped(void);
+extern unsigned vermeer_debug_capacity(void);
 extern int vermeer_debug_sample_request(void);
 extern int vermeer_debug_frame_request(void);
 extern void vermeer_debug_input_status(void);
 void vermeer_usb_debug_start(void);
+void vermeer_usb_log_bootstrap_start(void);
+void vermeer_usb_log_bootstrap_step(void);
+void vermeer_usb_log_bootstrap_finish(void);
+static int log_bootstrap;
 void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
 int vermeer_usb_running(void);
 const char *vermeer_usb_failure_reason(void);
@@ -303,9 +308,13 @@ static void command_line(void)
     u.command[u.command_n]=0;
     if (u.command_overflow) printf("VERMEER DEBUG: command too long\n");
     else if (!strcmp(u.command,"ping")) printf("VERMEER DEBUG: pong K70DBG004\n");
-    else if (!strcmp(u.command,"status"))
+    else if (!strcmp(u.command,"status")) {
         printf("VERMEER DEBUG: K70DBG004 events=%u tx=%llu rx=%llu log=%llu dropped=%llu\n",
             u.events,u.tx_bytes,u.rx_bytes,vermeer_debug_total(),vermeer_debug_dropped());
+        uint64_t total=vermeer_debug_total();unsigned capacity=vermeer_debug_capacity();
+        printf("VERMEER LOG: capacity=%u retained-from=%llu; volatile until captured by host\n",
+            capacity,total>capacity?total-capacity:0);
+    }
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("VERMEER DEBUG: replay retained RAM log\n");
     } else if (!strcmp(u.command,"sample")) {
@@ -458,7 +467,8 @@ int vermeer_usb_ram_handoff(void)
         fail("poll thread handoff");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return -1;
     }
     thread_deallocate(thread);
-    printf("VERMEER USB: bootstrap receive complete; log worker owns DMA\n");
+    if (log_bootstrap) printf("VERMEER USB: preloaded-root log worker owns DMA before networking\n");
+    else printf("VERMEER USB: bootstrap receive complete; log worker owns DMA\n");
     return 0;
 }
 /* Require the exact known nonsecure SMMU layout and a unique identity route.
@@ -535,6 +545,7 @@ void vermeer_usb_debug_start(void)
     wr(DCTL,RESET);
     for (i=0;i<500 && (rd(DCTL)&RESET);i++) vermeer_usb_busy_wait(1000);
     if (rd(DCTL)&RESET) { fail("controller reset timeout dctl=%08x",rd(DCTL));return; }
+    if ((id>>16)==0x3331) vermeer_usb_busy_wait(50000);
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
     if (rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
@@ -551,7 +562,7 @@ void vermeer_usb_debug_start(void)
     wr(DEVTEN,7|(1u<<9)|(1u<<11));wr(DCTL,rd(DCTL)|RUN);
     for (i=0;i<500 && (rd(DSTS)&HALTED);i++) vermeer_usb_busy_wait(1000);
     if (rd(DSTS)&HALTED) { fail("controller run timeout dsts=%08x",rd(DSTS));return; }
-    if (ram_dma) {
+    if (ram_dma || log_bootstrap) {
         poll_owner=1;poll_started=1;
         printf("VERMEER USB: bootstrap polling active; no scheduler dependency; K70DBG004\n");
         return;
@@ -568,4 +579,30 @@ void vermeer_usb_set_ram_receiver(int (*callback)(const void *,unsigned))
     if (!poll_started && !u.regs) { ram_receiver=callback;ram_dma=callback!=NULL; }
 }
 int vermeer_usb_running(void) { return poll_started && !u.failed; }
+/* Optional logging cannot become a second root receiver or a mount gate.
+ * One bootstrap caller services DMA until the explicit worker handoff. */
+void vermeer_usb_log_bootstrap_start(void)
+{
+    int enabled=0;
+    PE_parse_boot_argn("vermeer_ram_log",&enabled,sizeof(enabled));
+    if (enabled!=1 || poll_started || u.regs || ram_receiver) return;
+    log_bootstrap=1;
+    printf("VERMEER LOG: 8 MiB volatile console; preload logging before networking\n");
+    vermeer_usb_debug_start();
+    if (!vermeer_usb_running())
+        printf("VERMEER LOG: USB unavailable; root continues; reason=%s\n",vermeer_usb_failure_reason());
+}
+void vermeer_usb_log_bootstrap_step(void)
+{
+    if (log_bootstrap && poll_started && poll_owner==1 && !u.failed)
+        (void)vermeer_usb_ram_step();
+}
+void vermeer_usb_log_bootstrap_finish(void)
+{
+    if (log_bootstrap && poll_started && poll_owner==1 && !u.failed) {
+        (void)vermeer_usb_ram_step();
+        if (!u.failed && vermeer_usb_ram_handoff())
+            printf("VERMEER LOG: worker unavailable; retained RAM console only\n");
+    }
+}
 #endif

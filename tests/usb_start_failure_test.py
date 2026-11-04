@@ -66,7 +66,7 @@ typedef void *thread_t;
 static uint32_t gcc[0x1000/4],dwc[0xe000/4],smmu[0xd0000/4],qs[0x100/4];
 static struct {vm_offset_t regs,dma,smmu;unsigned long long pa;unsigned mps,resource[6];
  bool failed;uint8_t coding[7];} u;
-static int scenario,ram_dma=1,poll_started,poll_owner,enabled=1;
+static int scenario,ram_dma=1,poll_started,poll_owner,enabled=1,log_bootstrap;
 static unsigned writes,callbacks,threads;
 static char failure_reason[192];
 static int (*ram_receiver)(const void *,unsigned);
@@ -123,7 +123,7 @@ static ppnum_t pmap_find_phys(int map,addr64_t va) {
  return (pa+va-u.dma+(scenario==23 && va!=u.dma?PAGE_SIZE:0))>>14;
 }
 static unsigned long long ptoa_64(ppnum_t pn) {return pn<<14;}
-static void vermeer_usb_busy_wait(unsigned n) {assert(n==1 || n==1000);}
+static void vermeer_usb_busy_wait(unsigned n) {assert(n==1 || n==1000 || n==50000);}
 static void sync_dma(unsigned off,unsigned bytes) {assert(!off && bytes==DMA_SIZE);}
 static void setup_arm(void) {if(scenario==30)fail("setup test failure");}
 static void usb_thread(void *p,int r) {(void)p;(void)r;}

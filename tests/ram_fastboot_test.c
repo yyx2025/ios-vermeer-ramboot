@@ -15,7 +15,7 @@ static void sha_case(const char *data,const char *expected)
 static int cmd(struct rfb_state *s,const char *v,char reply[65])
 {return rfb_command(s,(const uint8_t *)v,(unsigned)strlen(v),reply);}
 static void init(struct rfb_state *s,uint64_t total,const uint8_t hash[32])
-{struct rfb_ops o={NULL,write_data};seen=0;calls=0;write_error=0;rfb_init(s,&o,total,hash);}
+{struct rfb_ops o={NULL,write_data,NULL,NULL};seen=0;calls=0;write_error=0;rfb_init(s,&o,total,hash);}
 static void short_transfer(void)
 {
  uint8_t hash[32],bad[32]={0};digest("abcdef",6,hash);struct rfb_state s;char r[65];

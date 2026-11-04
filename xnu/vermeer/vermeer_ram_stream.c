@@ -52,6 +52,9 @@ extern dev_t mdevadd(int,uint64_t,unsigned int,int);
  * omitted from BSD's exported headers. Match the XNU-8796 implementation. */
 extern vm_map_address_t pmap_map(vm_map_address_t,vm_offset_t,vm_offset_t,vm_prot_t,unsigned int);
 extern void vermeer_usb_debug_start(void);
+extern void vermeer_usb_log_bootstrap_start(void);
+extern void vermeer_usb_log_bootstrap_step(void);
+extern void vermeer_usb_log_bootstrap_finish(void);
 extern int vermeer_usb_running(void);
 extern int vermeer_usb_ram_step(void);
 extern int vermeer_usb_connected(void);
@@ -172,6 +175,7 @@ static int start_receiver(void)
         if (preloaded!=1 || SecureDTGetProperty(chosen,"vermeer-ram-preloaded",&blob,&size)!=kSuccess || size!=sizeof(value))return EINVAL;
         memcpy(&value,blob,sizeof(value));if (value!=1)return EINVAL;
         printf("VERMEER RAM: loader supplied compressed root; no XNU USB receiver required\n");
+        vermeer_usb_log_bootstrap_start();
     } else {
         struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
         vrx_init(&receive,&ops);
@@ -198,6 +202,7 @@ static int start_receiver(void)
      * stays cacheable and outside the 2GiB managed allocator. */
     const uint64_t batch=UINT64_C(0x1000000);
     for (uint64_t off=0;off<STREAM_BYTES;off+=batch) {
+        if (preloaded)vermeer_usb_log_bootstrap_step();
         if (!preloaded && vermeer_usb_ram_step()<0)return EIO;
         if (pmap_map(area+off,STREAM_BASE+off,STREAM_BASE+off+batch,
             VM_PROT_READ|VM_PROT_WRITE,VM_WIMG_COPYBACK)!=area+off+batch)return EIO;
@@ -213,6 +218,7 @@ static int start_receiver(void)
             uint64_t left=config.packed_bytes-off;
             size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
             SHA256_Update(&transfer_hash,(const void *)(area+off),n);off+=n;
+            vermeer_usb_log_bootstrap_step();
             if (!(off&UINT64_C(0x3fffffff)))printf("VERMEER RAM: verified %llu bytes\n",off);
         }
         error=receive_finish(NULL);
@@ -242,6 +248,10 @@ int vermeer_ram_stream_start(void)
     if (preloaded)printf("VERMEER RAM: checking loader root before network initialization\n");
     else printf("VERMEER RAM: starting USB before network initialization\n");
     start_error=start_receiver();
+    if (preloaded) {
+        if (start_error)printf("VERMEER LOG: root bootstrap error=%d\n",start_error);
+        vermeer_usb_log_bootstrap_finish();
+    }
     return start_error;
 }
 int vermeer_ram_stream_boot(void)

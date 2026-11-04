@@ -30,3 +30,8 @@ assert stream.index('SHA256_Init(&transfer_hash);',preload)<stream.index('receiv
 print('Preloaded root: independent SHA gate before readiness and no XNU USB dependency: PASS')
 print('Bootstrap CDC enumeration before mapping, complete receive/COMMIT drain before networking: PASS')
 print('Actual patched startup: USB before network, root mount after initialization and complete receive, wait gates retained: PASS')
+
+assert stream.index('vermeer_usb_log_bootstrap_start();',setup)<stream.index('kmem_alloc(kernel_map,&area',setup)
+assert 'if (preloaded)vermeer_usb_log_bootstrap_step();' in stream
+assert stream.index('start_error=start_receiver();')<stream.index('vermeer_usb_log_bootstrap_finish();')
+print('Optional preloaded-root logging: polled before mapping, worker handoff before networking: PASS')

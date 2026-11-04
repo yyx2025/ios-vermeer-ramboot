@@ -39,6 +39,9 @@ static int kernel_map,receive_prepared,transfer_hash;
 static struct vrx_state receive;
 static int flag=1,property=1,alloc_error,map_error,finish_error,usb_calls,maps,allocs,finishes;
 static uint64_t hashed;
+static unsigned log_starts,log_steps;
+static void vermeer_usb_log_bootstrap_start(void){log_starts++;}
+static void vermeer_usb_log_bootstrap_step(void){log_steps++;}
 static int SecureDTLookupEntry(void *a,const char *b,DTEntry *d){assert(!a && !strcmp(b,"/chosen"));*d=1;return 0;}
 static int SecureDTGetProperty(DTEntry d,const char *s,const void **blob,unsigned *size){assert(d==1);
  if(!strcmp(s,"vermeer-ram-config")){*blob=&fixture;*size=sizeof(fixture);return 0;}
@@ -60,7 +63,7 @@ static int kmem_alloc(int m,vm_offset_t *p,uint64_t n,int f,int t){(void)m;(void
 static vm_offset_t pmap_map(vm_offset_t v,uint64_t lo,uint64_t hi,int p,int w){assert(p==3 && w==3 && hi-lo==0x1000000 && lo>=STREAM_BASE);maps++;return map_error?v:v+hi-lo;}
 static void SHA256_Init(int *s){assert(s==&transfer_hash);hashed=0;}
 static void SHA256_Update(int *s,const void *p,size_t n){assert(s==&transfer_hash && (uintptr_t)p==area+hashed && n<=VRS_BLOCK);hashed+=n;}
-static void clear(void){flag=property=1;alloc_error=map_error=finish_error=usb_calls=maps=allocs=finishes=receive_prepared=0;hashed=0;}
+static void clear(void){flag=property=1;alloc_error=map_error=finish_error=usb_calls=maps=allocs=finishes=receive_prepared=0;hashed=0;log_starts=log_steps=0;}
 '''
 checks=r'''
 int main(void){
@@ -72,6 +75,7 @@ int main(void){
  clear();alloc_error=1;assert(start_receiver()==ENOMEM && !usb_calls && !maps && !receive_prepared);
  clear();map_error=1;assert(start_receiver()==EIO && !usb_calls && maps==1 && !finishes);
  clear();finish_error=EIO;assert(start_receiver()==EIO && !usb_calls && finishes==1 && !receive_prepared);
+ clear();assert(!start_receiver() && log_starts==1 && log_steps==386 && !usb_calls);
  puts("Actual preloaded-root startup: no USB calls, checked property, mapping/allocation failures, full SHA accounting and verification gate PASS");
 }
 '''

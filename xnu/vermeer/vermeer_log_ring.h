@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #endif
 #ifndef VL_RING_SIZE
-#define VL_RING_SIZE (1u << 20)
+#define VL_RING_SIZE (8u << 20)
 #endif
 struct vl_ring { uint64_t total; char bytes[VL_RING_SIZE]; };
 static inline void vl_append(struct vl_ring *r, const char *s, unsigned n)

@@ -32,6 +32,7 @@ def main():
     p.add_argument('--checkpoint',action='store_true')
     p.add_argument('--ram-stream',action='store_true',help='ramdisk positional argument is the verified packed-root JSON; root is received over USB before mount')
     p.add_argument('--ram-preload-fastboot',action='store_true',help='receive and verify the complete root in the shim before XNU; requires --ram-stream')
+    p.add_argument('--retain-logs',action='store_true',help='preload with optional early USB logs and 8 MiB RAM console')
     p.add_argument('--ram-map-only',action='store_true',help='read bounded live FDT and return; no XNU jump')
     p.add_argument('--ram-read-only',action='store_true',help='after a live-FDT guard, sample 9 GiB using aligned reads only')
     p.add_argument('--ram-write-restore',action='store_true',help='test and restore 65536 sampled words in lower 8 GiB; no XNU or partition writes')
@@ -40,6 +41,8 @@ def main():
     p.add_argument('--product-adt',type=Path)
     p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
     a = p.parse_args()
+    if a.retain_logs and not a.ram_preload_fastboot:
+        raise ValueError('Retained logs require the preloaded complete-root route')
     if a.ram_preload_fastboot and not a.ram_stream:
         raise ValueError('Pre-kernel Fastboot requires a complete packed-root record')
     if a.ram_stream and any((a.checkpoint,a.ram_map_only,a.ram_read_only,a.ram_write_restore,a.usb_checkpoint,a.usb_map_only)):
@@ -65,6 +68,8 @@ def main():
     if not a.ram_stream and a.ramdisk.stat().st_size >= 0x80000000:
         raise ValueError('Root alone exceeds the retained 2 GiB window; multi-GiB streaming/mapping is not implemented yet')
     kernel = a.kernel.read_bytes()
+    if a.retain_logs and b'8 MiB volatile console; preload logging before networking' not in kernel:
+        raise ValueError('Kernel does not contain early preloaded-root logging')
     if a.ram_preload_fastboot and b'loader supplied compressed root; no XNU USB receiver required' not in kernel:
         raise ValueError('Kernel lacks the verified preloaded-root path')
     if not a.checkpoint:
@@ -101,7 +106,9 @@ def main():
         args += ' rootrw=1 ignition_level=1 vermeer_ram_only=1 vermeer_prepare_root=1 vermeer_migration_baseline=1 vermeer_usb=1 vermeer_touch=1'
     if a.ram_stream: args += ' vermeer_ram_stream=1'
     if a.ram_preload_fastboot:
-        args=args.replace('vermeer_usb=1','vermeer_usb=0')+' vermeer_ram_preloaded=1'
+        if not a.retain_logs: args=args.replace('vermeer_usb=1','vermeer_usb=0')
+        args+=' vermeer_ram_preloaded=1'
+        if a.retain_logs: args+=' vermeer_ram_log=1'
     blob,info = mkpayload.build(a.kernel,tree_path,args,None if a.ram_stream else a.ramdisk)
     mem = 0x80000000
     if int(info['kernel_end'],16)-int(info['virt_base'],16)+len(tree_path.read_bytes())+0x8000 > mem:
@@ -193,6 +200,10 @@ def main():
                       windows_com_port_required=False,bootstrap_usb_polling=False,
                       usb_start_before_network=True,root_receive_before_network=True,
                       measured_abl_max_download_bytes=805306368,ram_chunk_bytes=67108864)
+    if a.retain_logs:
+        report.update(early_preloaded_usb_logs=True,ram_log_bytes=8388608,loader_log_bytes=32768,
+                      log_writes_to_phone_storage=False,windows_log_capture_required=True,
+                      usb_start_before_network=True,full_ios_desktop_verified=False)
     a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))
 

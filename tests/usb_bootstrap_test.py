@@ -28,7 +28,7 @@ prefix=r'''
 typedef void *thread_t;
 static struct {bool busy[6],failed,set_line,data_in,configured,dtr;unsigned resource[6];
  enum {SETUP_PHASE,DATA_PHASE,WAIT2,WAIT3,STATUS_PHASE} phase;} u;
-static int poll_started,poll_owner,ram_receiver;
+static int poll_started,poll_owner,ram_receiver,log_bootstrap;
 static unsigned ends,stalls,steps,threads,writes,fail_end,fail_thread;
 static void fail(const char *why) {(void)why;u.failed=true;}
 static int epcmd(unsigned ep,unsigned cmd,unsigned p0,unsigned p1,unsigned p2) {

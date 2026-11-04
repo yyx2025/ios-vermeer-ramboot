@@ -54,8 +54,8 @@
 #define RX_BYTES 0x10000u
 #define EVENT_BYTES 4096u
 static struct {
-    bool failed,touched,configured,busy[4],data_in,reply_pending,commit_info;
-    unsigned mps,pos,requested[4],resource[4];
+    bool failed,touched,configured,busy[4],data_in,reply_pending,commit_info,session_started;
+    unsigned mps,pos,requested[4],resource[4],enumeration_resets;
     enum { SETUP_PHASE,DATA_PHASE,WAIT2,WAIT3,STATUS_PHASE } phase;
     const char *reason;
     char reply[65];
@@ -100,7 +100,11 @@ static void transfer(unsigned ep,unsigned offset,unsigned bytes,unsigned kind)
     if(ep>=4 || u.busy[ep] || offset>DMA_BYTES || bytes>DMA_BYTES-offset) {fail("DMA transfer bounds/ownership");return;}
     uint64_t address=DMA+offset,trb=DMA+trbs[ep];
     volatile uint32_t *t=(volatile uint32_t *)(uintptr_t)trb;
-    t[0]=(uint32_t)address;t[1]=(uint32_t)(address>>32);t[2]=bytes;t[3]=kind|1u|2u|(1u<<10)|(1u<<11);
+    t[3]=0;t[0]=(uint32_t)address;t[1]=(uint32_t)(address>>32);t[2]=bytes;
+    /* Publish the descriptor before giving hardware ownership (HWO).
+     * Like raphael patch 0122, descriptors need ordered, uncached access.
+     * This shim already requires MMU and data cache off. */
+    barrier();t[3]=kind|1u|2u|(1u<<10)|(1u<<11);
     u.requested[ep]=bytes;u.busy[ep]=true;barrier();
     (void)command(ep,START,(uint32_t)(trb>>32),(uint32_t)trb,0);
 }
@@ -211,21 +215,40 @@ static void reset_control(void)
     }
     u.data_in=false;stall();
 }
+static void reset_enumeration(const char *why)
+{
+    /* Raphael 0127 resets endpoints so the host can configure again.
+     * RAM Fastboot permits this only BEFORE the first protocol packet.
+     * Never retry/resume an interrupted root or forget its hash state. */
+    if(u.session_started || receiver.received || receiver.remaining ||
+       receiver.complete || receiver.failed || u.reply_pending || u.commit_info) {
+        fail("USB reset/disconnect after Fastboot started");return;
+    }
+    if(u.enumeration_resets>=8) {fail("USB enumeration reset limit");return;}
+    u.enumeration_resets++;
+    if(!u.configured) {reset_control();return;}
+    for(unsigned ep=0;ep<4;ep++)if(u.busy[ep]) {
+        if(command(ep,END|FORCE_REMOVE|(u.resource[ep]<<16),0,0,0))return;
+        u.busy[ep]=false;u.resource[ep]=0;
+    }
+    wr(DALEPENA,3);u.configured=false;u.data_in=false;u.reply[0]=0;
+    setup_arm();con_str("USB",why);
+}
 static void event(uint32_t e)
 {
     if(e&1) {
         if(e&0xfe) {fail("device event format");return;}
         unsigned type=(e>>8)&15;
         if(type==1) {
-            if(u.configured) {fail("bus reset after configuration");return;}
-            reset_control();if(!u.failed)wr(DCFG,rd(DWC,DCFG)&~(127u<<3));
+            reset_enumeration("enumeration reset; waiting for host configuration");
+            if(!u.failed)wr(DCFG,rd(DWC,DCFG)&~(127u<<3));
         } else if(type==2) {
             unsigned speed=rd(DWC,DSTS)&7;
             if(speed!=0 && speed!=1 && speed!=3) {fail("USB2 speed guard");return;}
             u.mps=speed==0?512:64;
             (void)command(0,SET_CONFIG,(64u<<3)|(2u<<30),(1u<<8)|(1u<<10),0);
             (void)command(1,SET_CONFIG,(64u<<3)|(2u<<30),(1u<<8)|(1u<<10)|(1u<<25),0);
-        } else if(!type && u.configured)fail("cable disconnected");
+        } else if(!type)reset_enumeration("enumeration disconnect; waiting for host configuration");
         else if(type==9 || type==11)fail("controller event overflow");
         return;
     }
@@ -234,6 +257,7 @@ static void event(uint32_t e)
         int n=complete(ep);if(n<0)return;
         if(status&1) {fail("USB transfer bus error");return;}
         if(ep==2) {
+            u.session_started=true;
             int result=receiver.remaining?rfb_data(&receiver,(const void *)(uintptr_t)(DMA+RX),(unsigned)n,u.reply):
                 rfb_command(&receiver,(const uint8_t *)(uintptr_t)(DMA+RX),(unsigned)n,u.reply);
             /* fastboot CLI does not print the payload of an OEM OKAY. Emit
@@ -278,13 +302,26 @@ static bool identity(void)
     if(!vusb_smmu_layout(u.id0,u.id1,u.id2,u.ctl)) {fail("SMMU layout/control refused");return false;}
     unsigned matches=0;
     for(unsigned i=0;i<105;i++)if(vusb_stream_match(rd(SMMU,0x800+4*i))) {matches++;u.route=rd(SMMU,0xc00+4*i);}
-    if(matches!=1) {fail("SID40 route is not unique");return false;}
+    if(!matches) {fail("SID40 route missing; DMA cannot reach RAM");return false;}
+    if(matches!=1) {fail("SID40 route is ambiguous");return false;}
     u.sctlr=1;
     if(((u.route>>16)&3)==0) {
         unsigned cb=u.route&255;if(cb>=70) {fail("SMMU context range");return false;}
         u.cbar=rd(SMMU,0x1000+4*cb);u.sctlr=rd(SMMU,0x80000+0x1000*cb);
     }
     if(!vusb_route_identity(u.route,u.cbar,u.sctlr)) {fail("SID40 is not identity");return false;}
+    return true;
+}
+static bool reset_device(void)
+{
+    wr(DCTL,RESET);
+    for(unsigned i=0;i<500 && (rd(DWC,DCTL)&RESET);i++)wait_us(1000);
+    if(rd(DWC,DCTL)&RESET) {fail("DWC3 reset timeout");return false;}
+    /* Linux dwc3_core_soft_reset and raphael 0114: on older DWC_usb31,
+     * CSFTRST clears before clock synchronization finishes (>=50 ms).
+     * Apply the bounded delay conservatively to the whole detected 3.1
+     * family; do not infer the K70 revision from the K20 Pro's revision. */
+    if((u.id>>16)==0x3331)wait_us(50000);
     return true;
 }
 static void start(void)
@@ -299,8 +336,7 @@ static void start(void)
     u.touched=true;wr(DEVTEN,0);wr(DCTL,rd(DWC,DCTL)&~RUN);
     unsigned i;for(i=0;i<500 && !(rd(DWC,DSTS)&HALTED);i++)wait_us(1000);
     if(!(rd(DWC,DSTS)&HALTED)) {fail("DWC3 halt timeout");return;}
-    wr(DCTL,RESET);for(i=0;i<500 && (rd(DWC,DCTL)&RESET);i++)wait_us(1000);
-    if(rd(DWC,DCTL)&RESET) {fail("DWC3 reset timeout");return;}
+    if(!reset_device())return;
     for(unsigned off=0;off<DMA_BYTES;off+=8)*(volatile uint64_t *)(uintptr_t)(DMA+off)=0;
     barrier();wr(EVLO,(uint32_t)DMA);wr(EVHI,(uint32_t)(DMA>>32));
     if(rd(DWC,EVLO)!=(uint32_t)DMA || rd(DWC,EVHI)!=(uint32_t)(DMA>>32)) {fail("DMA address readback");return;}
@@ -346,6 +382,7 @@ int ram_fastboot_receive(uintptr_t dtb)
         con_str("REFUSED","live RAM ownership/overlap");return -1;
     }
     volatile struct rfb_ops ops;ops.ctx=NULL;ops.write=write_root;
+    ops.log_size=con_log_size;ops.log_read=con_log_read;
     rfb_init(&receiver,(const struct rfb_ops *)&ops,RFB_ROOT_BYTES,rfb_root_sha);
     if(receiver.failed)return -1;
     con_str("RAM","live lower 8 GiB guard passed");start();

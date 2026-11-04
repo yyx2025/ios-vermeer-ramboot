@@ -68,6 +68,7 @@ jobs:
           python3 tests/fastboot_descriptors_test.py
           python3 tests/fastboot_usb_state_test.py
           python3 tests/preloaded_root_test.py
+          python3 tests/retained_log_test.py
           python3 tests/fastboot_host_test.py
 
       - name: Fetch build script
@@ -166,7 +167,7 @@ jobs:
         run: |
           if [ "$PROFILE" = vermeer-ios-ram-gui ]; then
             python3 tools/check_ram_startup.py dxb/xnu
-            python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui --ram-only --ram-stream --ram-preload
+            python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui --ram-only --ram-stream --ram-preload --retained-logs
           elif [ "$PROFILE" = vermeer-ios-gui ]; then
             python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui
           else

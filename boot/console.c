@@ -14,6 +14,22 @@
 volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
 static uint32_t con_bg;
 static int row;
+static char boot_log[32768];
+static unsigned boot_log_used;
+static void log_text(const char *s)
+{
+	while (*s && boot_log_used < sizeof(boot_log)) boot_log[boot_log_used++] = *s++;
+}
+unsigned con_log_size(void *ctx) { (void)ctx; return boot_log_used; }
+unsigned con_log_read(void *ctx, uint32_t offset, char *out, unsigned max)
+{
+	(void)ctx;
+	if (offset >= boot_log_used) return 0;
+	unsigned n = boot_log_used - offset;
+	if (n > max) n = max;
+	for (unsigned i = 0; i < n; i++) out[i] = boot_log[offset+i];
+	return n;
+}
 
 void con_clear(uint32_t bg)
 {
@@ -68,6 +84,7 @@ void con_skip(void)
 
 void con_str(const char *label, const char *s)
 {
+	log_text(label); log_text(": "); log_text(s); log_text("\n");
 	put_str(0, label, YELLOW);
 	put_str(LABEL_COLS, s, WHITE);
 	row++;
@@ -83,6 +100,10 @@ void con_hex(const char *label, uint64_t v)
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)
 {
 	char buf[9];
+	log_text(label); log_text(": "); log_text(a);
+	fmt_hex(buf, va, 8); log_text(buf);
+	if (b) { log_text(" "); log_text(b); fmt_hex(buf, vb, 8); log_text(buf); }
+	log_text("\n");
 	int col = put_str(0, label, YELLOW);
 	col = col < LABEL_COLS ? LABEL_COLS : col + 1;
 	col = put_str(col, a, YELLOW);

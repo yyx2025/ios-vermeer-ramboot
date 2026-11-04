@@ -20,3 +20,6 @@ void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);
 /* label, then "a=xxxxxxxx b=xxxxxxxx" style pairs of 32-bit values */
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb);
+/* Bounded first-boot transcript; clear-screen never erases it. */
+unsigned con_log_size(void *ctx);
+unsigned con_log_read(void *ctx, uint32_t offset, char *out, unsigned max);

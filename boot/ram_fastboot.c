@@ -69,6 +69,25 @@ int rfb_command(struct rfb_state *s,const uint8_t *p,unsigned n,char reply[65])
     reply[0]=0;
     if(s->failed || s->complete)return reject(s,reply,"FAILreceiver stopped");
     if(!n || n>64 || s->remaining)return reject(s,reply,"FAILcommand order/length");
+    if(equal(p,n,"getvar:boot-log-size")) {
+        if(!s->ops.log_size) {text(reply,"FAILboot log unavailable");return 0;}
+        text(reply,"OKAY");hex(reply+4,s->ops.log_size(s->ops.ctx),8);return 0;
+    }
+    if(n==24 && equal(p,16,"getvar:boot-log-")) {
+        /* Only transcript offsets, never addresses or arbitrary RAM. */
+        uint32_t off=0;
+        for(unsigned i=16;i<24;i++) {
+            unsigned v=p[i]>='0' && p[i]<='9'?p[i]-'0':p[i]>='a' && p[i]<='f'?p[i]-'a'+10:16;
+            if(v>=16) {text(reply,"FAILlog offset");return 0;}off=(off<<4)|v;
+        }
+        if(!s->ops.log_size || !s->ops.log_read || off>=s->ops.log_size(s->ops.ctx)) {
+            text(reply,"FAILlog bounds");return 0;
+        }
+        char bytes[24];unsigned count=s->ops.log_read(s->ops.ctx,off,bytes,sizeof(bytes));
+        if(!count || count>sizeof(bytes))return reject(s,reply,"FAILlog callback bounds");
+        text(reply,"OKAY");for(unsigned i=0;i<count;i++)hex(reply+4+2*i,(uint8_t)bytes[i],2);
+        return 0;
+    }
     if(equal(p,n,"getvar:product")) {text(reply,"OKAYvermeer");return 0;}
     if(equal(p,n,"getvar:version")) {text(reply,"OKAY0.4");return 0;}
     if(equal(p,n,"getvar:version-bootloader")) {text(reply,"OKAYVERMEER-RAM-FASTBOOT-1");return 0;}

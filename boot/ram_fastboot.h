@@ -10,6 +10,8 @@ void rfb_sha_final(struct rfb_sha *,uint8_t out[32]);
 struct rfb_ops {
     void *ctx;
     int (*write)(void *,uint64_t,const void *,unsigned);
+    unsigned (*log_size)(void *);
+    unsigned (*log_read)(void *,uint32_t,char *,unsigned);
 };
 struct rfb_state {
     struct rfb_ops ops;

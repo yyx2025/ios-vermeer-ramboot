@@ -55,4 +55,8 @@ if '--ram-poll' in sys.argv:
                    b'complete root received before networking; bootstrap poll v1',
                    b'polling CDC enumeration before root mapping/network'):
         if marker not in data:raise SystemExit('Kernel lacks polled RAM receive: '+marker.decode())
+if '--retained-logs' in sys.argv:
+    for marker in (b'8 MiB volatile console; preload logging before networking', b'vermeer_ram_log',
+                   b'preloaded-root log worker owns DMA before networking', b'retained-from=%llu'):
+        if marker not in data:raise SystemExit('Kernel lacks retained logging: '+marker.decode())
 print('Final integrated kernel contains AKS, watchdog, crash reasons, root preparation and USB debug: PASS')
