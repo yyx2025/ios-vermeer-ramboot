@@ -41,7 +41,7 @@ jobs:
   build:
     # macOS 14 is being retired. Keep the verified XNU-8796 IIG generated source
     # while building the unchanged DriverKit definitions with current tools.
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
