@@ -151,7 +151,7 @@ int main(int argc,char **argv) {
  case 7:expected="register mapping dwc3=1 smmu=0";break;
  case 8:dwc[0xc120/4]=0;expected="DWC3 identity id=00000000";break;
  case 9:dwc[GCTL/4]=0x1000;expected="DWC3 not device mode gctl=00001000";break;
- case 10:smmu[0x20/4]=0;expected="SMMU layout/control id0=00000000";break;
+ case 10:smmu[0x20/4]=0;expected="SMMU layout/control gate refused id0=00000000";break;
  case 11:smmu[0x24/4]=0;expected="id1=00000000";break;
  case 12:smmu[0x28/4]=0;expected="id2=00000000";break;
  case 13:smmu[0]=0;expected="ctl=00000000";break;

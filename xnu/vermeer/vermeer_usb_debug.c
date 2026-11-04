@@ -469,7 +469,7 @@ static bool identity(void)
     uint32_t id0=read_reg(s,0x20),id1=read_reg(s,0x24),id2=read_reg(s,0x28),ctl=read_reg(s,0);
     printf("VERMEER USB: SMMU id0=%08x id1=%08x id2=%08x ctl=%08x\n",id0,id1,id2,ctl);
     if (!vusb_smmu_layout(id0,id1,id2,ctl)) {
-        fail("SMMU layout/control id0=%08x id1=%08x id2=%08x ctl=%08x",id0,id1,id2,ctl);return false;
+        fail("verified SMMU layout/control gate refused id0=%08x id1=%08x id2=%08x ctl=%08x",id0,id1,id2,ctl);return false;
     }
     unsigned matches=0;uint32_t route=0;
     for (unsigned i=0;i<105;i++) if (vusb_stream_match(read_reg(s,0x800+4*i))) {
