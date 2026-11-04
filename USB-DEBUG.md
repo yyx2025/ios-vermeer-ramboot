@@ -53,6 +53,25 @@ This change makes the pre-USB stopping point observable; it is not proof that
 the underlying thread stall, handset USB or Apple desktop is fixed.
 
 Experimental opt-in CDC ACM serial interface, integrated with the iOS profile.
+
+2026-11-04 K70 RAM-stream test: the polled candidate from commit
+`4d2cc2847d4ec1e59ec9e5c7ddfb08892d5ee66d` stopped with
+`early USB receive setup failed: 6` before CDC enumeration. The host found no
+matching serial/PnP device and received no COMMIT acknowledgment. The user had
+already rebooted and recalled normal logs/waiting for the root, with no separate
+USB error. ENXIO identifies an unsuccessful driver start, not the failed guard.
+Earlier hardware checkpoints below are inherited history, not validation of
+this RAM-stream candidate.
+
+Startup refusals now retain the first reason in a bounded buffer and include it
+in the BSD bootstrap panic. Clock/SMMU/route checks include the values they
+examined; formerly silent mapping, allocation, DMA lookup/continuity and wrapper
+failures have distinct messages. The original hardware gates remain in place.
+`tests/usb_start_failure_test.py` exercises the actual initialization functions
+with fake MMIO, including zero controller writes on pre-start refusals and
+single-owner/no-retry behavior. This diagnostic change does not establish the
+physical failure cause or working enumeration.
+
 Hardware checkpoint2026-10-21: integrated004 (source `f0aec9c`,
 Actions39540409885) enumerated with Windows Usbser as COM6, streamed early
 kernel and Apple-service crash logs, and answered `status` through bulk OUT/IN.

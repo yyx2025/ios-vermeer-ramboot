@@ -7,6 +7,7 @@ bsd=(tree/'bsd/kern/bsd_init.c').read_text()
 net=(tree/'bsd/net/dlil.c').read_text()
 stream=(tree/'bsd/dev/vermeer_ram_stream.c').read_text()
 assert bsd.count('int early_usb_error = vermeer_ram_stream_start();')==1
+assert 'early_usb_error, vermeer_usb_failure_reason()' in bsd
 assert bsd.index('int early_usb_error = vermeer_ram_stream_start();') < bsd.index('\n\tdlil_init();')
 assert bsd.index('\n\tnet_init_run();') < bsd.index('int ram_stream_error = vermeer_ram_stream_boot();') < bsd.index('vfs_mountroot()')
 assert 'while (ifp->if_threads_pending != 0)' in net

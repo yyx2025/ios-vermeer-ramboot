@@ -62,6 +62,7 @@ jobs:
           python3 tests/gui_profile_test.py
           python3 tests/ram_profile_test.py
           python3 tests/usb_bootstrap_test.py
+          python3 tests/usb_start_failure_test.py
 
       - name: Fetch build script
         run: |

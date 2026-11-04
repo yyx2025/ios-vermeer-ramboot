@@ -7,6 +7,7 @@
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <stdarg.h>
 #include <kern/clock.h>
 #include <kern/thread.h>
 #include <mach/thread_act.h>
@@ -29,6 +30,10 @@ extern void vermeer_debug_input_status(void);
 void vermeer_usb_debug_start(void);
 void vermeer_usb_set_ram_receiver(int (*)(const void *,unsigned));
 int vermeer_usb_running(void);
+const char *vermeer_usb_failure_reason(void);
+/* Single USB owner; preserve the first refusal through the bootstrap panic.
+ * Formatting only uses values already read by the required hardware checks. */
+static char failure_reason[192];
 static int (*ram_receiver)(const void *,unsigned);
 static _Atomic int poll_started;
 /* 1: bootstrap caller; 2: USB worker. Ownership changes only once, after
@@ -119,11 +124,22 @@ static void sync_dma(unsigned off,unsigned size)
     flush_dcache64((addr64_t)(u.pa+off),size,TRUE);
     __asm__ volatile("dsb sy" ::: "memory");
 }
-static void fail(const char *why)
+static void fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void fail(const char *fmt, ...)
 {
-    if (!u.failed) printf("VERMEER USB: stopped: %s; permanent DMA retained\n",why);
-    if (!u.failed && ram_receiver) (void)ram_receiver(NULL,0);
+    if (u.failed) return;
+    va_list args;
+    va_start(args,fmt);
+    vsnprintf(failure_reason,sizeof(failure_reason),fmt,args);
+    va_end(args);
     u.failed=true;
+    printf("VERMEER USB: stopped: %s; permanent DMA retained\n",failure_reason);
+    if (ram_receiver) (void)ram_receiver(NULL,0);
+}
+const char *vermeer_usb_failure_reason(void)
+{
+    if (failure_reason[0]) return failure_reason;
+    return poll_started?"no USB driver failure recorded":"USB not started; check vermeer_usb=1";
 }
 void vermeer_usb_busy_wait(unsigned usec)
 {
@@ -142,13 +158,13 @@ static int epcmd(unsigned ep,unsigned cmd,uint32_t p0,uint32_t p1,uint32_t p2)
     for (unsigned n=0;n<1000;n++) {
         uint32_t v=rd(EPBASE(ep)+12);
         if (!(v&ACTIVE)) {
-            if ((v>>12)&15) { fail("endpoint command status"); return -1; }
+            if ((v>>12)&15) { fail("endpoint command status ep=%u cmd=%x value=%08x",ep,cmd,v); return -1; }
             if ((cmd&15)==START) u.resource[ep]=(v>>16)&0x7f;
             return 0;
         }
         vermeer_usb_busy_wait(1);
     }
-    fail("endpoint command timeout"); return -1;
+    fail("endpoint command timeout ep=%u cmd=%x",ep,cmd); return -1;
 }
 static void transfer(unsigned ep,unsigned buf,unsigned length,unsigned kind)
 {
@@ -453,20 +469,23 @@ static bool identity(void)
     uint32_t id0=read_reg(s,0x20),id1=read_reg(s,0x24),id2=read_reg(s,0x28),ctl=read_reg(s,0);
     printf("VERMEER USB: SMMU id0=%08x id1=%08x id2=%08x ctl=%08x\n",id0,id1,id2,ctl);
     if (!vusb_smmu_layout(id0,id1,id2,ctl)) {
-        printf("VERMEER USB: verified SMMU layout/control gate refused; mappings unchanged\n");return false;
+        fail("SMMU layout/control id0=%08x id1=%08x id2=%08x ctl=%08x",id0,id1,id2,ctl);return false;
     }
     unsigned matches=0;uint32_t route=0;
     for (unsigned i=0;i<105;i++) if (vusb_stream_match(read_reg(s,0x800+4*i))) {
         matches++;route=read_reg(s,0xc00+4*i);
     }
-    if (matches!=1) { printf("VERMEER USB: SID40 matches %u\n",matches);return false; }
+    if (matches!=1) { fail("SID40 route count=%u",matches);return false; }
     unsigned cb=route&255;uint32_t cbar=0,sctlr=1;
     if (((route>>16)&3)==0) {
-        if (cb>=70) return false;
+        if (cb>=70) { fail("SID40 context out of range route=%08x cb=%u",route,cb);return false; }
         cbar=read_reg(s,0x1000+4*cb);sctlr=read_reg(s,0x80000+0x1000*cb);
     }
     printf("VERMEER USB: SID40 route=%08x cbar=%08x sctlr=%08x\n",route,cbar,sctlr);
-    return vusb_route_identity(route,cbar,sctlr)!=0;
+    if (!vusb_route_identity(route,cbar,sctlr)) {
+        fail("SID40 not identity route=%08x cbar=%08x sctlr=%08x",route,cbar,sctlr);return false;
+    }
+    return true;
 }
 void vermeer_usb_debug_start(void)
 {
@@ -476,42 +495,46 @@ void vermeer_usb_debug_start(void)
     attempted=true;u.mps=512;u.coding[0]=0;u.coding[1]=0xc2;u.coding[2]=1;u.coding[6]=8;
     printf("VERMEER USB: CDC ACM debug004, RAM log and read-only commands\n");
     vm_offset_t gcc=ml_io_map(0x139000,0x1000);
-    if (!gcc) return;
+    if (!gcc) { fail("GCC register mapping");return; }
     uint32_t power=read_reg(gcc,4),master=read_reg(gcc,0x18),cfg=read_reg(gcc,0x88),aggre=read_reg(gcc,0x8c);
     printf("VERMEER USB: GCC power=%08x master=%08x cfg=%08x aggre=%08x\n",power,master,cfg,aggre);
     if (!(power&(1u<<31)) || ((master|cfg|aggre)&(1u<<31))) {
-        printf("VERMEER USB: clocks/power unavailable; controller untouched\n");return;
+        fail("clocks/power power=%08x master=%08x cfg=%08x aggre=%08x",power,master,cfg,aggre);return;
     }
     u.regs=ml_io_map(0xa600000,0xe000);u.smmu=ml_io_map(0x15000000,0xd0000);
-    if (!u.regs || !u.smmu) return;
+    if (!u.regs || !u.smmu) { fail("register mapping dwc3=%u smmu=%u",!!u.regs,!!u.smmu);return; }
     uint32_t id=rd(0xc120),hw=rd(0xc140);unsigned width=hw>>24;
     printf("VERMEER USB: id=%08x hwparams0=%08x awidth=%u gctl=%08x dctl=%08x dsts=%08x\n",
         id,hw,width,rd(GCTL),rd(DCTL),rd(DSTS));
-    if ((id>>16)!=0x5533 && (id>>16)!=0x3331) return;
-    if (((rd(GCTL)>>12)&3)!=2 || !identity()) {
-        printf("VERMEER USB: device mode/identity guard refused; controller untouched\n");return;
+    if ((id>>16)!=0x5533 && (id>>16)!=0x3331) { fail("DWC3 identity id=%08x",id);return; }
+    uint32_t gctl=rd(GCTL);
+    if (((gctl>>12)&3)!=2) {
+        fail("DWC3 not device mode gctl=%08x",gctl);return;
     }
+    if (!identity()) return;
     if (kmem_alloc_contig(kernel_map,&u.dma,DMA_SIZE,PAGE_MASK,0,0,
-        KMA_DATA|KMA_ZERO|KMA_PERMANENT,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS) return;
+        KMA_DATA|KMA_ZERO|KMA_PERMANENT,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS) {
+        fail("DMA allocation bytes=%u",DMA_SIZE);return;
+    }
     ppnum_t pn=pmap_find_phys(kernel_pmap,(addr64_t)u.dma);
-    if (!pn) return;
+    if (!pn) { fail("DMA physical lookup");return; }
     u.pa=ptoa_64(pn);
-    if (!vusb_dma_allowed(u.pa,DMA_SIZE,width)) { printf("VERMEER USB: high DMA width/range guard refused\n");return; }
+    if (!vusb_dma_allowed(u.pa,DMA_SIZE,width)) { fail("DMA range pa=%llx bytes=%u width=%u",u.pa,DMA_SIZE,width);return; }
     for (unsigned off=0;off<DMA_SIZE;off+=PAGE_SIZE) {
         ppnum_t page=pmap_find_phys(kernel_pmap,(addr64_t)(u.dma+off));
-        if (!page || ptoa_64(page)!=u.pa+off) return;
+        if (!page || ptoa_64(page)!=u.pa+off) { fail("DMA not contiguous offset=%x",off);return; }
     }
     vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
-    if (!qs) return;
+    if (!qs) { fail("USB wrapper register mapping");return; }
     /* First stop any old device DMA; soft reset must finish before replacing
      * descriptors. PHY configuration and global bus settings remain from ABL. */
     wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
     unsigned i;
     for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) vermeer_usb_busy_wait(1000);
-    if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
+    if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout dsts=%08x",rd(DSTS));return; }
     wr(DCTL,RESET);
     for (i=0;i<500 && (rd(DCTL)&RESET);i++) vermeer_usb_busy_wait(1000);
-    if (rd(DCTL)&RESET) { fail("controller reset timeout");return; }
+    if (rd(DCTL)&RESET) { fail("controller reset timeout dctl=%08x",rd(DCTL));return; }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
     if (rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
@@ -527,7 +550,7 @@ void vermeer_usb_debug_start(void)
     __asm__ volatile("dsb sy" ::: "memory");
     wr(DEVTEN,7|(1u<<9)|(1u<<11));wr(DCTL,rd(DCTL)|RUN);
     for (i=0;i<500 && (rd(DSTS)&HALTED);i++) vermeer_usb_busy_wait(1000);
-    if (rd(DSTS)&HALTED) { fail("controller run timeout");return; }
+    if (rd(DSTS)&HALTED) { fail("controller run timeout dsts=%08x",rd(DSTS));return; }
     if (ram_dma) {
         poll_owner=1;poll_started=1;
         printf("VERMEER USB: bootstrap polling active; no scheduler dependency; K70DBG004\n");
