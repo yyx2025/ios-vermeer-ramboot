@@ -23,7 +23,7 @@ VERSION = 'VERMEER-RAM-FASTBOOT-1'
 CHUNK = 64 * 1024 * 1024
 BOOT_LIMIT = 805306368
 QUERIES = {'product','version-bootloader','serialno','max-download-size',
-           'ram-total','ram-received','ram-sha256-lo','ram-sha256-hi'}
+           'ram-total','ram-received','ram-sha256-lo','ram-sha256-hi','boot-log-size'}
 
 class Fastboot:
     def __init__(self, executable, log):
@@ -33,7 +33,8 @@ class Fastboot:
         allowed = args == ['devices']
         if len(args)>=4 and args[0]=='-s' and args[1] and not args[1].startswith('-'):
             action=args[2:]
-            allowed = ((len(action)==2 and action[0]=='getvar' and action[1] in QUERIES)
+            allowed = ((len(action)==2 and action[0]=='getvar' and
+                (action[1] in QUERIES or (args[1]==SERIAL and re.fullmatch(r'boot-log-[0-9a-f]{8}',action[1]))))
                 or (len(action)==2 and action[0]=='boot' and args[1]!=SERIAL)
                 or (len(action)==2 and action[0]=='stage' and args[1]==SERIAL)
                 or (action==['oem','ram-boot'] and args[1]==SERIAL))
@@ -45,8 +46,9 @@ class Fastboot:
                 encoding='utf-8',errors='replace',timeout=timeout,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             record.update(returncode=p.returncode,output=p.stdout+p.stderr)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             record['timeout']=timeout
+            record['output']=''.join(x.decode('utf-8','replace') if isinstance(x,bytes) else (x or '') for x in (exc.stdout,exc.stderr))
             raise RuntimeError('Fastboot timed out; session stopped, keep the final phone screen') from None
         finally:
             with self.log.open('a',encoding='utf-8') as f:
@@ -87,7 +89,7 @@ def preflight(image, root_json):
     if args!=record['command_line']: raise ValueError('Embedded command line mismatch')
     options=dict(item.split('=',1) for item in args.split())
     required={'rd':'md0','vermeer_ram_only':'1','vermeer_ram_stream':'1',
-              'vermeer_ram_preloaded':'1','vermeer_usb':'0','vermeer_touch':'1'}
+              'vermeer_ram_preloaded':'1','vermeer_usb':'1','vermeer_ram_log':'1','vermeer_touch':'1'}
     if any(options.get(k)!=v for k,v in required.items()) or 'init' in options:
         raise ValueError('Image does not use the pre-XNU complete-root path')
     _,_,adt_off,adt_bytes,_,physical,memory=struct.unpack_from('<7Q',data,off+16)
@@ -106,6 +108,8 @@ def preflight(image, root_json):
         or record.get('fastboot_ram_serial')!=SERIAL or record.get('ram_chunk_bytes')!=CHUNK
         or record.get('packed_bytes')!=root['packed_bytes'] or record.get('packed_sha256')!=root['packed_sha256']):
         raise ValueError('Image and complete-root records do not match')
+    if record.get('early_preloaded_usb_logs') is not True or record.get('ram_log_bytes')!=8388608:
+        raise ValueError('Image does not contain retained early USB logging')
     print('Checking the entire packed-root SHA256 before any handset command...',flush=True)
     with packed.open('rb') as f:
         if file_sha256(f)!=root['packed_sha256']: raise ValueError('Complete packed-root SHA256 mismatch')
@@ -121,9 +125,23 @@ def validate_receiver(fb,total,sha):
     if int(fb.getvar(SERIAL,'max-download-size'),0)!=CHUNK:
         raise RuntimeError('Unexpected RAM receiver download bound')
 
+def collect_loader_log(fb,logs,label):
+    size=int(fb.getvar(SERIAL,'boot-log-size'),16)
+    if not 0<size<=32768:raise RuntimeError('Invalid loader transcript length')
+    with (Path(logs)/('loader-'+label+'.log')).open('xb') as f:
+        offset=0
+        while offset<size:
+            encoded=fb.getvar(SERIAL,f'boot-log-{offset:08x}')
+            if not re.fullmatch(r'(?:[0-9a-fA-F]{2}){1,24}',encoded):raise RuntimeError('Invalid loader transcript encoding')
+            data=bytes.fromhex(encoded);wanted=min(24,size-offset)
+            if len(data)<wanted:raise RuntimeError('Loader transcript truncated')
+            f.write(data[:wanted]);f.flush();offset+=wanted
+    return size
+
 def upload(fb,packed,total,sha,logs,state,chunk=CHUNK):
     if not 0<chunk<=CHUNK: raise ValueError('Invalid RAM chunk size')
     validate_receiver(fb,total,sha)
+    if state.get('retain_logs'):state['loader_initial_log_bytes']=collect_loader_log(fb,logs,'initial')
     if shutil.disk_usage(logs).free<2*chunk: raise RuntimeError('Insufficient PC space for bounded chunk staging')
     sent=0;digest=hashlib.sha256()
     with Path(packed).open('rb') as source, tempfile.TemporaryDirectory(prefix='ram-chunk-',dir=logs) as tmp:
@@ -140,12 +158,13 @@ def upload(fb,packed,total,sha,logs,state,chunk=CHUNK):
             print(f'Root in phone RAM: {sent}/{total} bytes ({sent/total:.1%})',flush=True)
         if source.read(1) or digest.hexdigest()!=sha:
             raise RuntimeError('Transmitted full-root SHA256/length mismatch; XNU was not requested')
+    if state.get('retain_logs'):state['loader_final_log_bytes']=collect_loader_log(fb,logs,'before-xnu')
     output=fb.run(['-s',SERIAL,'oem','ram-boot'],timeout=120)
     if 'root SHA256 verified' not in output or not re.search(r'\bOKAY\b',output):
         raise RuntimeError('No explicit complete-root verification confirmation from the loader')
     state.update(loader_sha256_confirmed=True,xnu_handoff_requested=True)
     print('Loader confirmed complete-root SHA256. XNU handoff requested.',flush=True)
-    print('USB disappearance is expected now. Root mount, desktop and touch must be checked on the phone.',flush=True)
+    print('Fastboot disconnects now; waiting for K70DBG004 USB kernel logging. Desktop still needs handset observation.',flush=True)
 
 def boot_and_upload(fb,image,packed,root,logs,state,wait_seconds=300):
     serials=fb.devices()
@@ -180,24 +199,32 @@ def save_windows_usb(logs):
     except (OSError,subprocess.TimeoutExpired) as e:
         (logs/'windows-usb-error.txt').write_text(str(e),encoding='utf-8')
 
-def main():
+def main(argv=None):
     p=argparse.ArgumentParser(__doc__)
     p.add_argument('--image',type=Path,required=True)
     p.add_argument('--root-record',type=Path,required=True)
     p.add_argument('--fastboot',type=Path,required=True)
     p.add_argument('--logs',type=Path,required=True)
     p.add_argument('--boot',action='store_true')
-    a=p.parse_args()
+    p.add_argument('--capture-seconds',type=int,default=1200)
+    a=p.parse_args(argv)
+    if not 30<=a.capture_seconds<=86400:p.error('capture-seconds must be 30..86400')
     logs=a.logs/datetime.now().strftime('%Y%m%d-%H%M%S-%f');logs.mkdir(parents=True,exist_ok=False)
     state={'temporary_boot_requested':False,'confirmed_ram_bytes':0,'loader_sha256_confirmed':False,
         'xnu_handoff_requested':False,'root_mount_verified':False,'desktop_verified':False,'touch_verified':False,
         'android_storage_commands':False,'boot_requested':a.boot}
-    result=1
+    result=1;capture=None
     try:
         if not a.fastboot.is_file(): raise ValueError('Local fastboot executable is missing')
         image,root,packed=preflight(a.image,a.root_record)
         state.update(image_sha256=image['sha256'],root_sha256=root['packed_sha256'],local_preflight_passed=True)
-        if a.boot: boot_and_upload(Fastboot(a.fastboot,logs/'fastboot.jsonl'),a.image,packed,root,logs,state)
+        if a.boot:
+            from kernel_log_capture import Capture, matching_ports
+            if matching_ports():raise RuntimeError('A previous K70 debug interface is still present; refusing to mix boot sessions')
+            state['retain_logs']=True
+            capture=Capture(logs);capture.start()
+            boot_and_upload(Fastboot(a.fastboot,logs/'fastboot.jsonl'),a.image,packed,root,logs,state)
+            capture.wait_after_handoff(a.capture_seconds)
         else: print('Local preflight PASS. No handset command issued. Use --boot only for the combined physical test.',flush=True)
         result=0
     except (OSError,ValueError,RuntimeError,KeyError,StopIteration,KeyboardInterrupt) as e:
@@ -205,6 +232,17 @@ def main():
         print('Stopped: '+state['error'],flush=True)
         if a.boot: save_windows_usb(logs)
     finally:
+        if capture:
+            try:
+                summary=capture.finish();state['kernel_capture']=summary
+                print('Kernel capture saved '+str(summary['bytes'])+' bytes; see kernel-summary.json and kernel-*.log',flush=True)
+                if not summary['bytes'] or summary['error']:
+                    result=1
+                    state.setdefault('error',summary['error'] or 'No kernel bytes captured; USB enumeration and handset screen need checking')
+                    save_windows_usb(logs)
+                    print('Capture incomplete: '+state['error'],flush=True)
+            except (OSError,RuntimeError) as error:
+                result=1;state['capture_error']=str(error)
         state['exit_code']=result
         (logs/'result.json').write_text(json.dumps(state,indent=2),encoding='utf-8')
         print('Session result: '+str(logs/'result.json'),flush=True)

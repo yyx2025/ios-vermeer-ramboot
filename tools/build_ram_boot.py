@@ -1,4 +1,4 @@
-"""Cross-build the upstream storage-free v4 shim on Windows; package only RAM roots.
+"""Cross-build the storage-free v4 shim with LLVM; package only RAM roots.
 
 Checkpoint mode is a source PID1 test, not Apple userspace. GUI mode requires
 the RAM-only kernel and a real HFS root. Stream mode keeps XNU at 2 GiB and
@@ -23,6 +23,19 @@ import mkvermeeradt
 import ram_stream_config
 
 
+def llvm_tools(directory):
+    """Resolve a complete native LLVM toolset before creating build output."""
+    suffix = '.exe' if os.name == 'nt' else ''
+    names = ('clang', 'lld', 'llvm-objcopy', 'llvm-readelf')
+    paths = []
+    for name in names:
+        found = str(directory / (name + suffix)) if directory else shutil.which(name + suffix)
+        if not found or not Path(found).is_file() or not os.access(found, os.X_OK):
+            raise ValueError('Missing LLVM tool '+name+'; use --llvm with the native LLVM bin directory')
+        paths.append(Path(found).absolute())
+    return paths
+
+
 def main():
     p = argparse.ArgumentParser(__doc__)
     p.add_argument('kernel',type=Path)
@@ -39,8 +52,9 @@ def main():
     p.add_argument('--usb-checkpoint',action='store_true',help='boot verified RAM GUI kernel with source PID1 only to test USB CDC, not iOS')
     p.add_argument('--usb-map-only',action='store_true',help='read USB/SMMU registers only, no XNU jump or controller writes')
     p.add_argument('--product-adt',type=Path)
-    p.add_argument('--llvm',type=Path,default=Path(r'D:\msys64\ucrt64\bin'))
+    p.add_argument('--llvm',type=Path,help='Native LLVM bin directory; defaults to PATH')
     a = p.parse_args()
+    clang, ld, objcopy, readelf = llvm_tools(a.llvm)
     if a.retain_logs and not a.ram_preload_fastboot:
         raise ValueError('Retained logs require the preloaded complete-root route')
     if a.ram_preload_fastboot and not a.ram_stream:
@@ -125,12 +139,9 @@ def main():
         shutil.copyfile(ROOT/'xnu/vermeer/vermeer_usb_protocol.h',build/'vermeer_usb_protocol.h')
     (build/'out').mkdir(exist_ok=True)
     (build/'out/payload.bin').write_bytes(blob)
-    clang = a.llvm/'clang.exe'
-    ld = a.llvm/'lld.exe'
-    objcopy = a.llvm/'llvm-objcopy.exe'
-    readelf = a.llvm/'llvm-readelf.exe'
     env = dict(os.environ)
-    env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
+    if a.llvm:
+        env['PATH'] = str(a.llvm.absolute())+os.pathsep+env.get('PATH','')
     objects=[]
     sources=['entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c','usb_map.c']
     if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c']

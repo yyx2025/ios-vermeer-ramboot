@@ -70,6 +70,8 @@ jobs:
           python3 tests/preloaded_root_test.py
           python3 tests/retained_log_test.py
           python3 tests/fastboot_host_test.py
+          python3 tests/windows_capture_test.py
+          python3 tests/k70_session_test.py
 
       - name: Fetch build script
         run: |
