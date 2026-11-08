@@ -161,6 +161,9 @@ with tempfile.TemporaryDirectory() as temp:
             if scenario == 0:
                 assert 'mapped 6144/6144 MiB' in result.stdout
                 assert 'mapped 6/6 GiB' in result.stdout
+                assert 'SHA256 init complete; first read/hash next' in result.stdout
+                assert 'SHA256 verified 1048576/5884407808 bytes' in result.stdout
+                assert 'SHA256 verified 5884407808/5884407808 bytes' in result.stdout
             if scenario == 2:
                 assert f'mapping failed kr=3 offset={0x40000000+(1<<shift):x}' in result.stdout
                 assert 'mapped 1/6 GiB' in result.stdout

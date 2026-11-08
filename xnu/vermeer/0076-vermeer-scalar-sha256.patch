@@ -1,0 +1,89 @@
+--- a/libkern/crypto/corecrypto_sha2.c
++++ b/libkern/crypto/corecrypto_sha2.c
+@@ -35,22 +35,36 @@
+ #if defined(CRYPTO_SHA2)
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-/*
+- * SWEET has no corecrypto kext, so g_crypto_funcs stays NULL. SHA-256 uses
+- * XNU's built-in implementation directly, as the SWEET PRNG does; this also
+- * serves code-signing page hashes. SHA-384/512 use BearSSL's portable
+- * implementation (libkern/crypto/sweet_sha2big.c), its context stored in
+- * the caller's SHA384_CTX/SHA512_CTX.
+- */
+-#include <corecrypto/ccsha2.h>
+-#define SHA256_DI()                     (&ccsha256_ltc_di)
+-#define SHA256_INIT(di, ctx)            ccdigest_init(di, ctx)
+-#define SHA256_UPDATE(di, ctx, len, d)  ccdigest_update(di, ctx, len, d)
+-#else
++/* SHA256 is used during pre-mount RAM-root verification and code signing.
++ * The pinned BearSSL provider is compiled with general registers only,
++ * matching this port's other portable libkern hash implementations. */
++#include "sweet_bearssl/inc/bearssl_hash.h"
++_Static_assert(sizeof(br_sha256_context) <= sizeof(SHA256_CTX),
++    "BearSSL SHA256 context must fit in SHA256_CTX");
++#define BR_SHA256_CTX(ctx) ((br_sha256_context *)(void *)(ctx))
++
++void
++SHA256_Init(SHA256_CTX *ctx)
++{
++    br_sha256_init(BR_SHA256_CTX(ctx));
++}
++
++void
++SHA256_Update(SHA256_CTX *ctx, const void *data, size_t len)
++{
++    br_sha256_update(BR_SHA256_CTX(ctx), data, len);
++}
++
++void
++SHA256_Final(void *digest, SHA256_CTX *ctx)
++{
++    br_sha256_out(BR_SHA256_CTX(ctx), digest);
++}
++
++#else /* !ARM64_BOARD_CONFIG_SWEET */
+ #define SHA256_DI()                     (g_crypto_funcs->ccsha256_di)
+ #define SHA256_INIT(di, ctx)            g_crypto_funcs->ccdigest_init_fn(di, ctx)
+ #define SHA256_UPDATE(di, ctx, len, d)  g_crypto_funcs->ccdigest_update_fn(di, ctx, len, d)
+-#endif
+ 
+ void
+ SHA256_Init(SHA256_CTX *ctx)
+@@ -83,6 +97,8 @@
+ 
+ 	ccdigest_final(di, ctx->ctx, digest);
+ }
++
++#endif /* !ARM64_BOARD_CONFIG_SWEET */
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include "sweet_bearssl/inc/bearssl_hash.h"
+--- a/libkern/conf/files
++++ b/libkern/conf/files
+@@ -109,6 +109,7 @@
+ libkern/crypto/sweet_sha1.c	optional crypto
+ libkern/crypto/sweet_dec32be.c	optional crypto
+ libkern/crypto/sweet_enc32be.c	optional crypto
++libkern/crypto/sweet_sha2small.c	optional crypto
+ libkern/crypto/sweet_sha2big.c	optional crypto
+ libkern/crypto/sweet_dec64be.c	optional crypto
+ libkern/crypto/sweet_enc64be.c	optional crypto
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -62,6 +62,8 @@
+ sweet_dec64be.o_CFLAGS_ADD += -mgeneral-regs-only
+ sweet_enc64be.o_CFLAGS_ADD += -mgeneral-regs-only
+ corecrypto_sha2.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_sha2small.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_sha2small.o_CFLAGS_ADD += -mgeneral-regs-only
+ endif
+ 
+ # Runtime support functions don't interact well with LTO (9294679)
+--- /dev/null
++++ b/libkern/crypto/sweet_sha2small.c
+@@ -0,0 +1,4 @@
++/* BearSSL at the immutable revision pinned in 0020-stage-bearssl.sh. */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include "sweet_bearssl/src/hash/sha2small.c"
++#endif

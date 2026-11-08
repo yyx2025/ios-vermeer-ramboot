@@ -19,6 +19,9 @@ with tempfile.TemporaryDirectory() as tmp:
         assert wanted in patches, wanted
     assert 'mounting dirty non-journaled root read-write' not in patches
     assert (out/'0075-vermeer-early-usb-network.patch').is_file()
+    assert (out/'0076-vermeer-scalar-sha256.patch').is_file()
+    assert 'sweet_sha2small.o_CFLAGS_ADD += -mgeneral-regs-only' in patches
+    assert 'br_sha256_update(BR_SHA256_CTX(ctx), data, len);' in patches
     for wanted in ('starting USB before network initialization',
                    'VERMEER NET: interface=%s pending=%u',
                    'VERMEER NET: DLIL pending=%u'):

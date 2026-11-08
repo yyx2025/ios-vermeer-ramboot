@@ -35,3 +35,13 @@ assert 'FALSE,PMAP_OPTIONS_NOWAIT,NULL' in stream
 assert 'mapping failed kr=%d offset=%llx' in stream
 assert 'pmap_map(' not in stream
 print('External root mapping: NOWAIT resource gate and 64 MiB progress: PASS')
+
+crypto=(tree/'libkern/crypto/corecrypto_sha2.c').read_text()
+assert 'br_sha256_init(BR_SHA256_CTX(ctx));' in crypto
+assert 'br_sha256_update(BR_SHA256_CTX(ctx), data, len);' in crypto
+assert 'br_sha256_out(BR_SHA256_CTX(ctx), digest);' in crypto
+assert (tree/'libkern/crypto/sweet_bearssl/src/hash/sha2small.c').is_file()
+assert 'sweet_sha2small.o_CFLAGS_ADD += -mgeneral-regs-only' in (tree/'libkern/conf/Makefile.template').read_text()
+assert 'SHA256 init complete; first read/hash next' in stream
+assert 'SHA256 verified %llu/%llu bytes' in stream
+print('SWEET SHA256 scalar provider, context bound and preloaded-root progress: PASS')

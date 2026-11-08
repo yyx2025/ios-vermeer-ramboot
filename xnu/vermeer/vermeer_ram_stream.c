@@ -227,13 +227,19 @@ static int start_receiver(void)
         config.base,config.bytes);
     if (preloaded) {
         printf("VERMEER RAM: verifying preloaded full-root SHA256 before use\n");
+        printf("VERMEER RAM: SHA256 init begin; scalar provider v2\n");
         SHA256_Init(&transfer_hash);
+        printf("VERMEER RAM: SHA256 init complete; first read/hash next\n");
         for (uint64_t off=0;off<config.packed_bytes;) {
             uint64_t left=config.packed_bytes-off;
             size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
+            if (!(off&UINT64_C(0xffffff)))
+                printf("VERMEER RAM: SHA256 reading offset=%llx bytes=%lu\n",off,(unsigned long)n);
             SHA256_Update(&transfer_hash,(const void *)(area+off),n);off+=n;
-            if (!(off&UINT64_C(0x3fffffff)))printf("VERMEER RAM: verified %llu bytes\n",off);
+            if (off==VRS_BLOCK || !(off&UINT64_C(0xffffff)) || off==config.packed_bytes)
+                printf("VERMEER RAM: SHA256 verified %llu/%llu bytes\n",off,config.packed_bytes);
         }
+        printf("VERMEER RAM: SHA256 final/index/HFS verification begin\n");
         error=receive_finish(NULL);
         if (error)return error;
         receive_prepared=1;
