@@ -48,9 +48,10 @@ static int receive_prepared;
 LCK_GRP_DECLARE(stream_group,"vermeer-ram-root");
 LCK_MTX_DECLARE(stream_lock,&stream_group);
 extern dev_t mdevadd(int,uint64_t,unsigned int,int);
-/* The ARM pmap_map prototype is in the Mach-private pmap header, which is
- * omitted from BSD's exported headers. Match the XNU-8796 implementation. */
-extern vm_map_address_t pmap_map(vm_map_address_t,vm_offset_t,vm_offset_t,vm_prot_t,unsigned int);
+/* BSD's exported pmap header omits this Mach-private declaration.
+ * Match XNU-8796; NOWAIT returns table resource shortages to this caller. */
+extern kern_return_t pmap_enter_options(pmap_t,vm_map_offset_t,ppnum_t,
+    vm_prot_t,vm_prot_t,unsigned int,boolean_t,unsigned int,void *);
 extern void vermeer_usb_debug_start(void);
 extern int vermeer_usb_running(void);
 extern int vermeer_usb_ram_step(void);
@@ -199,8 +200,26 @@ static int start_receiver(void)
     const uint64_t batch=UINT64_C(0x1000000);
     for (uint64_t off=0;off<STREAM_BYTES;off+=batch) {
         if (!preloaded && vermeer_usb_ram_step()<0)return EIO;
-        if (pmap_map(area+off,STREAM_BASE+off,STREAM_BASE+off+batch,
-            VM_PROT_READ|VM_PROT_WRITE,VM_WIMG_COPYBACK)!=area+off+batch)return EIO;
+        /* pmap_map uses the same enter routine with options=0, which can
+         * sleep indefinitely while growing tables. Preserve page geometry,
+         * coherent RAM attributes and mapping ownership, but report a
+         * resource shortage before touching any unmapped root bytes. */
+        if (!(off&UINT64_C(0x3ffffff)))
+            printf("VERMEER RAM: mapping %llu/6144 MiB; page=%lu\n",
+                off>>20,(unsigned long)PAGE_SIZE);
+        for (uint64_t page=off;page<off+batch;page+=PAGE_SIZE) {
+            kern_return_t kr=pmap_enter_options(kernel_pmap,area+page,
+                (ppnum_t)((STREAM_BASE+page)>>PAGE_SHIFT),
+                VM_PROT_READ|VM_PROT_WRITE,VM_PROT_NONE,VM_WIMG_COPYBACK,
+                FALSE,PMAP_OPTIONS_NOWAIT,NULL);
+            if (kr!=KERN_SUCCESS) {
+                printf("VERMEER RAM: mapping failed kr=%d offset=%llx va=%llx pa=%llx\n",
+                    kr,page,(uint64_t)(area+page),STREAM_BASE+page);
+                return kr==KERN_RESOURCE_SHORTAGE?ENOMEM:EIO;
+            }
+        }
+        if (!((off+batch)&UINT64_C(0x3ffffff)))
+            printf("VERMEER RAM: mapped %llu/6144 MiB\n",(off+batch)>>20);
         if (!((off+batch)&UINT64_C(0x3fffffff)))
             printf("VERMEER RAM: mapped %llu/6 GiB\n",(off+batch)>>30);
     }
