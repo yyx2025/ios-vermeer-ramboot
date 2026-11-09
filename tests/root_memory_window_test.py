@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory() as temporary:
     expected=hashlib.sha256(data).digest();windows.WINDOW_BYTES=65536
     blob,rows=windows.make_windows(root,len(data),expected.hex())
     assert [(r[0],r[1]) for r in rows]==[(0,65536),(65536,65536),(131072,16384)]
-    windows_file=temp/'windows';windows_file.write_bytes(blob)
+    windows_file=temp/'windows.bin';windows_file.write_bytes(blob)
     for bad in (data[:-1],bytes([data[0]^1])+data[1:],data+b'X'):
         root.write_bytes(bad)
         try:windows.make_windows(root,len(data),expected.hex())
