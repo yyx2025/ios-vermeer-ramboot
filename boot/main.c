@@ -53,6 +53,7 @@ void boot_main(uintptr_t fdt)
     con_hex("IMAGE", (uintptr_t)boot_main);
     con_hex("FDT", fdt);
 #ifdef VERMEER_RAM_FASTBOOT
+    con_str("CACHE", "previous-stage data caches cleaned before RAM writes");
     if (ram_fastboot_receive(fdt)) {
         con_str("RESULT", "RAM receive stopped; keep this screen");
         for (;;) __asm__ volatile("yield");

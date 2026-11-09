@@ -382,6 +382,7 @@ static int write_root(void *ctx,uint64_t offset,const void *data,unsigned n)
     for(;i<n;i++)d[i]=s[i];return 0;
 }
 int ram_fastboot_receive(uintptr_t dtb);
+extern int ram_cache_sync_range(uint64_t,uint64_t);
 int ram_fastboot_receive(uintptr_t dtb)
 {
     uint64_t sctlr;__asm__ volatile("mrs %0,sctlr_el1":"=r"(sctlr));
@@ -393,6 +394,11 @@ int ram_fastboot_receive(uintptr_t dtb)
        ((uintptr_t)_head<UINT64_C(0xac0000000) && (uintptr_t)_end>HIGH_RAM_LO)) {
         con_str("REFUSED","live RAM ownership/overlap");return -1;
     }
+    con_str("CACHE","synchronizing owned high RAM before first write");
+    if(ram_cache_sync_range(HIGH_RAM_LO,UINT64_C(0xac0000000))) {
+        con_str("REFUSED","owned RAM cache synchronization failed");return -1;
+    }
+    con_str("CACHE","owned high RAM synchronized to PoC");
 #ifdef VERMEER_RAM_SHA_ACCEL
     con_str("HASH",rfb_sha_accel_begin()?"ARM64 SHA256 instructions":"software fallback");
 #endif

@@ -64,6 +64,7 @@ static int kernel_map,receive_prepared,transfer_hash;
 static struct vrx_state receive;
 static int flag=1,property=1,alloc_error,map_error,finish_error;
 static unsigned usb_calls,allocs,finishes,hash_starts;
+static int window_error;
 static uint64_t hashed,mapped,map_calls,fail_offset=UINT64_MAX;
 static int verify_sha_provider(void){return 0;}
 static int verify_root_probes(DTEntry chosen){assert(chosen==1 && mapped==STREAM_BYTES);return 0;}
@@ -111,6 +112,17 @@ static void SHA256_Update(int *s,const void *p,size_t n){
  assert(s==&transfer_hash && (uintptr_t)p==area+hashed && n<=VRS_BLOCK);
  assert(n<=fixture.packed_bytes-hashed);hashed+=n;
 }
+static int verify_root_windows(DTEntry chosen){
+ assert(chosen==1 && hash_starts==1 && mapped==STREAM_BYTES);
+ if(window_error)return window_error;
+ for(uint64_t off=0;off<fixture.packed_bytes;){
+  size_t n=(size_t)(fixture.packed_bytes-off);if(n>VRS_BLOCK)n=VRS_BLOCK;
+  SHA256_Update(&transfer_hash,(void *)(area+off),n);off+=n;
+  if(off==VRS_BLOCK || !(off&UINT64_C(0x3ffffff)) || off==fixture.packed_bytes)
+   printf("VERMEER RAM: SHA256 verified %llu/%llu bytes\n",(unsigned long long)off,(unsigned long long)fixture.packed_bytes);
+ }
+ return 0;
+}
 '''
 checks = r'''
 int main(int argc,char **argv){
@@ -128,6 +140,7 @@ int main(int argc,char **argv){
   case 7:finish_error=EIO;break;
   case 8:fixture.base+=PAGE_SIZE;break;
   case 9:flag=2;break;
+  case 10:window_error=EIO;break;
   default:assert(0);
  }
  int result=start_receiver();
@@ -141,6 +154,7 @@ int main(int argc,char **argv){
  else if(scenario==4){assert(result==ENOMEM && allocs==1 && !map_calls && !hash_starts);}
  else if(scenario==5 || scenario==8 || scenario==9){assert(result==EINVAL && !allocs && !usb_calls);}
  else if(scenario==6){assert(result==ENXIO && usb_calls==4 && !allocs);}
+ else if(scenario==10){assert(result==EIO && mapped==STREAM_BYTES && !finishes && !receive_prepared);}
  else {assert(result==EIO && mapped==STREAM_BYTES && finishes==1 && !receive_prepared);}
  printf("CASE %d PAGE %llu PASS\n",scenario,(unsigned long long)PAGE_SIZE);
 }
@@ -156,7 +170,7 @@ with tempfile.TemporaryDirectory() as temp:
         subprocess.run([os.environ.get('CC','clang'), '-std=c11', '-O2', '-Wall', '-Wextra',
             '-Werror', '-Wno-format', f'-DPAGE_SHIFT={shift}', *flags, '-I', str(root/'xnu/vermeer'),
             str(c), '-o', str(exe)], check=True)
-        for scenario in range(10):
+        for scenario in range(11):
             result = subprocess.run([str(exe), str(scenario)], capture_output=True, text=True)
             if result.returncode:
                 raise RuntimeError(result.stdout+result.stderr)

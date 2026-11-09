@@ -14,6 +14,7 @@
 #include "ram_guard.h"
 #ifdef VERMEER_RAM_FASTBOOT
 #include "ram_fastboot.h"
+extern int ram_cache_sync_range(uint64_t,uint64_t);
 #endif
 
 #define BOOT_LINE_LENGTH	608
@@ -206,6 +207,12 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
 	#ifdef VERMEER_RAM_FASTBOOT
+	/* Initial PoC cleanup preceded every write to this live-FDT-owned RAM.
+	 * Final by-VA maintenance covers coherent system caches as required by
+	 * the ARM64 boot contract; it cannot retire old dirty lines over the root. */
+	if (ram_cache_sync_range(p->phys_base,top) ||
+	    ram_cache_sync_range(UINT64_C(0x940000000),UINT64_C(0x940000000)+rfb_owned_root_bytes()))
+		return "kernel/root cache synchronization refused";
 	if (rfb_verify_handoff_probes()) return "root changed after kernel copy; XNU refused";
 	#endif
 

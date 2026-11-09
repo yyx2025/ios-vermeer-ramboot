@@ -185,6 +185,7 @@ jobs:
             python3 tests/scalar_sha256_test.py --tree dxb/xnu
             python3 tests/root_finish_test.py --tree dxb/xnu
             python3 tests/root_memory_probe_test.py --tree dxb/xnu
+            python3 tests/root_memory_window_test.py --tree dxb/xnu
             python3 tools/check_scalar_sha256.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
             python3 tools/check_scalar_sha256.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --root-verifier
             python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet --gui --ram-only --ram-stream --ram-preload

@@ -182,6 +182,54 @@ static int verify_root_probes(DTEntry chosen)
     }
     printf("VERMEER ROOT: mapped RAM probes and physical addresses matched; full SHA still required\n");return 0;
 }
+#ifndef VMRW_WINDOW_BYTES
+#define VMRW_WINDOW_BYTES UINT64_C(0x4000000)
+#endif
+/* Full coverage is independent of the sparse handoff witnesses. Both hashes
+ * consume the same bounded snapshot in managed RAM; the full-file gate stays
+ * mandatory before any index/decode/HFS operation. */
+static int verify_root_windows(DTEntry chosen) __attribute__((noinline));
+static int verify_root_windows(DTEntry chosen)
+{
+    const void *blob=NULL;unsigned size=0;struct root_probe_header header;
+    root_failure_stage="root-windows-config";
+    if(SecureDTGetProperty(chosen,"vermeer-ram-windows",&blob,&size)!=kSuccess || size<sizeof(header))return EINVAL;
+    memcpy(&header,blob,sizeof(header));
+    uint64_t count=(config.packed_bytes+VMRW_WINDOW_BYTES-1)/VMRW_WINDOW_BYTES;
+    if(memcmp(header.magic,"VMRW0001",8) || !count || count>128 || header.count!=count ||
+       header.entry_bytes!=sizeof(struct root_probe_entry) ||
+       size!=sizeof(header)+header.count*sizeof(struct root_probe_entry) ||
+       header.packed_bytes!=config.packed_bytes || memcmp(header.sha256,config.sha256,32) || !cache)return EINVAL;
+    printf("VERMEER ROOT: RAM consistency v5; verifying %u contiguous windows through managed snapshots\n",header.count);
+    uint64_t covered=0;
+    for(unsigned i=0;i<header.count;i++) {
+        struct root_probe_entry entry;SHA256_CTX window_hash;uint8_t actual[32];
+        memcpy(&entry,(const uint8_t *)blob+sizeof(header)+i*sizeof(entry),sizeof(entry));
+        uint64_t remaining=config.packed_bytes-covered;
+        uint64_t wanted=remaining>VMRW_WINDOW_BYTES?VMRW_WINDOW_BYTES:remaining;
+        root_failure_stage="root-windows-config";
+        if(entry.reserved || entry.offset!=covered || entry.bytes!=wanted || !entry.bytes)return EINVAL;
+        root_failure_stage="root-window-read";SHA256_Init(&window_hash);
+        for(uint64_t off=entry.offset;off<entry.offset+entry.bytes;) {
+            uint64_t left=entry.offset+entry.bytes-off;
+            size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
+            memcpy((void *)cache,(const void *)(area+off),n);
+            SHA256_Update(&window_hash,(const void *)cache,n);
+            SHA256_Update(&transfer_hash,(const void *)cache,n);off+=n;
+            if(off==VRS_BLOCK || !(off&UINT64_C(0x3ffffff)) || off==config.packed_bytes)
+                printf("VERMEER RAM: SHA256 verified %llu/%llu bytes\n",off,config.packed_bytes);
+        }
+        SHA256_Final(actual,&window_hash);
+        if(memcmp(actual,entry.sha256,32)) {
+            root_failure_stage="mapped-root-window-mismatch";
+            printf("VERMEER ROOT: full window mismatch window=%u offset=%llx bytes=%u\n",i,entry.offset,entry.bytes);
+            hash_mismatch(root_failure_stage,entry.sha256,actual);return EIO;
+        }
+        covered+=entry.bytes;
+    }
+    if(covered!=config.packed_bytes)return EINVAL;
+    printf("VERMEER ROOT: all contiguous RAM windows matched; independent full SHA still required\n");return 0;
+}
 static int receive_data(void *ctx,uint64_t offset,const void *data,size_t n)
 {
     (void)ctx;
@@ -350,15 +398,7 @@ static int start_receiver(void)
         printf("VERMEER RAM: SHA256 init begin; scalar provider v2\n");
         SHA256_Init(&transfer_hash);
         printf("VERMEER RAM: SHA256 init complete; first read/hash next\n");
-        for (uint64_t off=0;off<config.packed_bytes;) {
-            uint64_t left=config.packed_bytes-off;
-            size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
-            if (!(off&UINT64_C(0x3ffffff)))
-                printf("VERMEER RAM: SHA256 reading offset=%llx bytes=%lu\n",off,(unsigned long)n);
-            SHA256_Update(&transfer_hash,(const void *)(area+off),n);off+=n;
-            if (off==VRS_BLOCK || !(off&UINT64_C(0x3ffffff)) || off==config.packed_bytes)
-                printf("VERMEER RAM: SHA256 verified %llu/%llu bytes\n",off,config.packed_bytes);
-        }
+        error=verify_root_windows(chosen);if(error)return error;
         printf("VERMEER RAM: SHA256 final/index/HFS verification begin\n");
         error=receive_finish(NULL);
         if (error)return error;

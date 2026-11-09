@@ -6,6 +6,7 @@
 #ifndef RFB_VERIFY_ROOT_BASE
 #define RFB_VERIFY_ROOT_BASE UINT64_C(0x940000000)
 #endif
+uint64_t rfb_owned_root_bytes(void) {return RFB_ROOT_BYTES;}
 static int hash_equal(const uint8_t *a,const uint8_t *b)
 {for(unsigned i=0;i<32;i++)if(a[i]!=b[i])return 0;return 1;}
 static void show_hash(const char *first,const char *second,const uint8_t *hash)

@@ -18,6 +18,7 @@ import time
 import adt
 from ram_stream_config import load_record, file_sha256
 import root_memory_probes
+import root_memory_windows
 
 SERIAL = 'VERMEERRAM001'
 VERSION = 'VERMEER-RAM-FASTBOOT-1'
@@ -101,6 +102,10 @@ def preflight(image, root_json):
     probes,_=root_memory_probes.make_probes(packed,root['packed_bytes'],root['packed_sha256'])
     if chosen.prop('vermeer-ram-probes')!=probes or record.get('stored_root_full_sha256_before_commit') is not True:
         raise ValueError('Embedded root RAM probes/readback gate mismatch')
+    windows,_=root_memory_windows.make_windows(packed,root['packed_bytes'],root['packed_sha256'])
+    if (chosen.prop('vermeer-ram-windows')!=windows or record.get('root_window_complete_coverage') is not True
+        or record.get('data_cache_cleaned_before_first_store') is not True):
+        raise ValueError('Embedded complete-root windows/cache handoff gate mismatch')
     if record.get('desktop_test_profile') is True:
         defaults=next(c for c in tree.children if c.name=='defaults')
         desktop_defaults={'vmm-present':1,'sleep-disabled':1}

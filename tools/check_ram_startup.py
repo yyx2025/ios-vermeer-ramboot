@@ -59,3 +59,12 @@ assert stream.index('verify_root_probes(chosen);if(error)return error;') < strea
 assert 'pmap_find_phys(kernel_pmap,area+entry.offset)' in stream
 assert 'mapped-root-probe-mismatch' in stream and 'root-map-address' in stream
 print('Root RAM witnesses: SHA selftest, physical address and mapped sample gates before full SHA: PASS')
+
+assert 'error=verify_root_windows(chosen);if(error)return error;' in stream
+assert stream.index('error=verify_root_windows(chosen);if(error)return error;',preload)<stream.index('error=receive_finish(NULL);',preload)
+assert 'memcpy((void *)cache,(const void *)(area+off),n);' in stream
+assert 'SHA256_Update(&window_hash,(const void *)cache,n);' in stream
+assert 'SHA256_Update(&transfer_hash,(const void *)cache,n);' in stream
+assert 'entry.offset!=covered' in stream and 'entry.bytes!=wanted' in stream
+assert 'mapped-root-window-mismatch' in stream
+print('Complete contiguous root windows and managed snapshots before independent full SHA: PASS')

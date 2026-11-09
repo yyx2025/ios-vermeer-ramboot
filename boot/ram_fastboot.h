@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 int rfb_verify_stored_root(void);
+uint64_t rfb_owned_root_bytes(void);
 int rfb_verify_handoff_probes(void);
 #define RFB_CHUNK_MAX (64u*1024u*1024u)
 struct rfb_sha { _Alignas(16) uint32_t h[8];uint64_t bytes;_Alignas(16) uint8_t block[64];unsigned used; };

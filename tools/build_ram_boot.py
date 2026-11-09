@@ -22,6 +22,7 @@ import mkpayload
 import mkvermeeradt
 import ram_stream_config
 import root_memory_probes
+import root_memory_windows
 
 
 def main():
@@ -101,6 +102,8 @@ def main():
             chosen.props.append(('vermeer-ram-preloaded',0,struct.pack('<I',1)))
             probes,probe_rows=root_memory_probes.make_probes(packed_file,packed_record['packed_bytes'],packed_record['packed_sha256'])
             chosen.props.append(('vermeer-ram-probes',0,probes))
+            windows,window_rows=root_memory_windows.make_windows(packed_file,packed_record['packed_bytes'],packed_record['packed_sha256'])
+            chosen.props.append(('vermeer-ram-windows',0,windows))
     if a.desktop_profile:
         defaults=next(child for child in tree.children if child.name=='defaults')
         for key in ('vmm-present','sleep-disabled'):
@@ -142,7 +145,7 @@ def main():
     env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
     objects=[]
     sources=['entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c','usb_map.c']
-    if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c','ram_copy_arm64.S','ram_root_verify.c']
+    if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c','ram_copy_arm64.S','ram_root_verify.c','ram_cache_arm64.S']
     if a.ram_sha_accel:sources+=['ram_sha_accel.c','ram_sha256_arm64.S']
     for source in sources:
         target = 'out/'+Path(source).stem+'.o'
@@ -214,6 +217,11 @@ def main():
         report.update(stored_root_full_sha256_before_commit=True,root_probe_schema='VMRP0001',
                       root_probe_count=len(probe_rows),root_probe_bytes=root_memory_probes.SAMPLE_BYTES,
                       root_probes_after_kernel_copy=True)
+        report.update(data_cache_cleaned_before_first_store=True,cache_ccidx_supported=True,
+                      owned_ram_poc_before_first_write=True,kernel_root_poc_before_handoff=True,
+                      root_window_schema='VMRW0001',root_window_count=len(window_rows),
+                      root_window_bytes=root_memory_windows.WINDOW_BYTES,
+                      root_window_complete_coverage=True,root_hash_managed_snapshot=True)
     if a.desktop_profile:
         report.update(desktop_test_profile=True,
                       adt_defaults={'vmm-present':1,'sleep-disabled':1},

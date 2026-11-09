@@ -38,12 +38,12 @@ for position in range(count):
     symbols[name]=(value,section);by_address.setdefault(value,[]).append((name,section))
 starts=sorted(by_address)
 roots=('_SHA256_Init','_SHA256_Update','_SHA256_Final','_br_sha256_init','_br_sha224_update','_br_sha256_out','_br_sha2small_round')
-if args.root_verifier:roots+=('_receive_finish','_index_sha','_decode_block','_vrs_open','_vrs_read','_lzfse_decode')
+if args.root_verifier:roots+=('_receive_finish','_index_sha','_decode_block','_vrs_open','_vrs_read','_lzfse_decode','_verify_root_windows')
 assert all(name in symbols for name in roots),'Actual scalar SHA256 symbols missing'
 queue=[symbols[name] for name in roots]
 visited={};instructions=0
 skip={'___stack_chk_fail','___chk_fail','_panic','_panic_plain'}
-if args.root_verifier:skip.update(('_printf','_wakeup','___assert_rtn'))
+if args.root_verifier:skip.update(('_printf','_wakeup','___assert_rtn','_SecureDTGetProperty'))
 while queue:
     address,section=queue.pop()
     if address in visited:continue

@@ -13,6 +13,11 @@ _head:
 start:
     msr daifset, #15
     mov x19, x0
+#ifdef VERMEER_RAM_FASTBOOT
+    /* No new-stage store may precede cleaning the previous stage's lines. */
+    bl ram_cache_prepare
+    cbnz w0, 1f
+#endif
     adr x1, stack_top
     mov sp, x1
     adr x1, vectors
