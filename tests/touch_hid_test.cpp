@@ -60,7 +60,7 @@ static void reset_failures(){attempts=appends=fail_at=fail_append=0;}
 int main()
 {
     SweetHIDTouch hid;struct vt_frame frame={};
-    frame.point[0]={720,3100,1};frame.point[3]={720,1600,1};
+    frame.point[0]={720,3180,1};frame.point[3]={720,1600,1};
     for(unsigned failure=1;failure<=3;++failure) {
         reset_failures();fail_at=failure;
         assert(hid.frame(&frame)==0 && !dispatched && !live && !lock_value);

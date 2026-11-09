@@ -6,7 +6,7 @@ int main(void)
 {
     struct vth_state state={0};struct vt_frame frame={0};struct vth_plan p;
     assert(vth_prepare(&state,&frame,&p)==0 && !p.count);
-    /* A swipe starts below the visible canvas, then moves toward its center. */
+    /* A swipe starts at the physical bottom edge, then moves toward its center. */
     frame.point[0]=(struct vt_point){720,3180,1};
     assert(vth_prepare(&state,&frame,&p)==1 && p.count==1 && p.any);
     assert(p.mask[0]==(VTH_TOUCH|VTH_POSITION|VTH_IDENTITY|VTH_EDGE));
@@ -31,5 +31,5 @@ int main(void)
     assert(vth_prepare(&state,&frame,&p)==-1 && !memcmp(&saved,&p,sizeof(p)));
     frame.point[1]=(struct vt_point){2,3200,1};assert(vth_prepare(&state,&frame,&p)==-1);
     frame.point[1]=(struct vt_point){2,2,2};assert(vth_prepare(&state,&frame,&p)==-1);
-    puts("Atomic touch frames, centered-canvas edge gestures, release and retry: PASS");
+    puts("Atomic touch frames, full-panel edge gestures, release and retry: PASS");
 }

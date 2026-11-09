@@ -1,8 +1,7 @@
-/* Experimental K70 GT9916 / GENI SPI SE4 physical input.
- * Only --ios-gui + vermeer_touch=1 + exact physical-model can enter here.
- * Fixed DT/official MiCode clock and pin contract; no DMA, PMIC/reset writes,
- * firmware/config upload, storage access or arbitrary debug MMIO command.
- * Reuses controller firmware/power left by ABL; absent identity stops safely.
+/* K70 GT9916S touch: r33s SE DMA, RPMh rails and THP processing ported
+ * to the iOS16 atomic HID collection API. Exact model/opt-in guards retained.
+ * No GPI, flash writes, firmware upload or persistent storage access.
+ * Reference: UniXNU-vermeer 7419b8b0; QcomGeniSpi BSD-2-Clause-Patent.
  */
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <sys/param.h>
@@ -15,45 +14,66 @@
 #include <machine/atomic.h>
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
-#include "vermeer_geni_spi.h"
+#include "vermeer_touch_thp.h"
 #include "vermeer_goodix_info.h"
 #include "vermeer_touch_clock.h"
-extern vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
-extern void sweet_hid_touch(int,int,int,int);
+#include "SmmuBypass.h"
+#include "qcom-geni-spi/GeniSpi.c"
+extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+#include "k70_rpmh.h"
+extern vm_offset_t ml_vtophys(vm_offset_t);
 extern int sweet_hid_touch_frame(const struct vt_frame *);
 extern int sweet_hid_touch_ready(void);
 extern void vermeer_debug_input_register(void (*)(void));
 void vermeer_touch_start(void);
+static void vt_status(void);
 
 #define VT_SE 0x00a90000u
+#define VT_WRAPPER 0x00ac0000u   /* geniqup@ac0000, spi4's wrapper */
 #define VT_GCC 0x00100000u
 #define VT_GPIO 0x0f100000u /* TLMM base f000000 + Kalama REG_BASE100000 */
+#define VT_SMMU 0x15000000u
+#define VT_SMMU_SIZE 0xd0000u
+#define VT_QUP_SID 0xa3u         /* sm8550.dtsi geniqup@ac0000 iommus = <&apps_smmu 0xa3 0> */
+#define VT_SPI_HZ 4000000u       /* conservative; GT9916 parts run at 10+ MHz */
 #define VT_VOTE 0x52008u
 #define VT_CLOCKS VTC_VOTES
-#define VT_RCG 0x184f0u
+#define VT_RCG 0x184f0u          /* gcc_qupv3_wrap1_s4_clk_src, DFS-managed */
 /* Wrapper1 core2x/core/master/slave AHB, SE4. Never SE3. */
 static const unsigned vt_halt[5]={0x23294,0x23284,0x2327c,0x23280,0x184e4};
-static const unsigned vt_offsets[]={0x20,0x24,0x28,0x48,0x7c,0x224,0x22c,
-    0x230,0x24c,0x250,0x254,0x258,0x25c,0x260,0x264,0x268,0x274,0x278,
-    0x284,0x288,0x614,0x644,0x80c,0x810,0x814,0xe18,0xe1c,0xe30};
-#define VT_NREGS (sizeof(vt_offsets)/sizeof(vt_offsets[0]))
+/* The engine's DMA buffers: one 4 KiB page per direction, each translated on its own (kernel image pages are
+ * not physically contiguous across pages here). */
+static struct {uint8_t tx[4096],rx[4096];} __attribute__((aligned(16384))) vt_dma;
 static struct {
-    vm_offset_t se,gcc,gpio;
-    uint32_t vote_added,pins[4],saved[VT_NREGS];
-    bool pins_saved,engine_saved,root_forced;
-    struct vg_bus bus;
+    vm_offset_t se,gcc,gpio,wrapper,smmu;
+    uint32_t vote_added,pins[4];
+    bool pins_saved,root_forced,engine_touched;
+    struct geni_spi spi;
+    int last_err,smmu_slot;
+    unsigned stage_detail,confirmed,nonzero,status_or,resets,cmd_ack,polls,frame_ready,frame_flag;
+    uint32_t fw_state,raw[2];
+    uint32_t _Atomic event_header;
+    unsigned level,div;
+    uint64_t sclk;
     struct vt_info info;
     struct vt_frame contacts;
     unsigned _Atomic stage;
-    uint64_t _Atomic reports,bad,transactions,emitted;
-    uint64_t _Atomic hid_retries;
+    uint64_t _Atomic reports,bad,transactions,emitted,hid_retries;
     uint32_t _Atomic last_header;
     uint32_t _Atomic clock_vote,clock_master,clock_slave,clock_se,clock_root,clock_cfg,clock_dfs;
     uint32_t _Atomic clock_core2x,clock_core;
-    uint32_t _Atomic spi_phase,spi_irq,spi_status;
-    uint8_t tx[1032],rx[1032];
+    uint32_t _Atomic engine_proto,reset_level,interface,irq_level;
+    char _Atomic reason[48];
+    uint8_t tx[4096],rx[4096];
 } touch;
 enum { VT_WAIT=1,VT_CLOCK,VT_FIRMWARE,VT_IDENTITY,VT_READY,VT_STOPPED };
+static void vt_reason(const char *text)
+{
+    unsigned i;
+    for(i=0;i+1<sizeof(touch.reason) && text[i];i++)touch.reason[i]=text[i];
+    touch.reason[i]=0;
+    printf("VERMEER TOUCH: %s\n",text);
+}
 static uint32_t vt_rd(vm_offset_t base,unsigned reg)
 {
     uint32_t v=*(volatile uint32_t *)(base+reg);
@@ -64,32 +84,41 @@ static void vt_wr(vm_offset_t base,unsigned reg,uint32_t v)
     *(volatile uint32_t *)(base+reg)=v;
     __asm__ volatile("dsb sy" ::: "memory");
 }
-static uint32_t vt_read(void *ctx,unsigned reg)
-{ (void)ctx;return vt_rd(touch.se,reg); }
-static void vt_write(void *ctx,unsigned reg,uint32_t v)
-{ (void)ctx;vt_wr(touch.se,reg,v); }
-static void vt_pause(void *ctx){(void)ctx;delay(20);}
+static uint32_t vt_io_rd(void *ctx,uint32_t reg){return vt_rd((vm_offset_t)ctx,reg);}
+static void vt_io_wr(void *ctx,uint32_t reg,uint32_t v){vt_wr((vm_offset_t)ctx,reg,v);}
+static void vt_io_delay(void *ctx,unsigned us){(void)ctx;delay(us);}
+static uint32_t vt_smmu_rd(void *ctx,unsigned reg){return vt_rd((vm_offset_t)ctx,reg);}
+static void vt_smmu_wr(void *ctx,unsigned reg,uint32_t v){vt_wr((vm_offset_t)ctx,reg,v);}
 static void vt_sleep(unsigned ms)
 {
     uint64_t deadline;clock_interval_to_deadline(ms,NSEC_PER_MSEC,&deadline);
     assert_wait_deadline((event_t)&touch,THREAD_UNINT,deadline);
     thread_block(THREAD_CONTINUE_NULL);
 }
-static void vt_status(void)
+static void vt_cache(void *p,size_t n,int clean_only)
 {
-    printf("VERMEER TOUCH: stage=%u reports=%llu bad=%llu spi=%llu emitted=%llu header=%08x source=physical-spi\n",
-        os_atomic_load(&touch.stage,relaxed),os_atomic_load(&touch.reports,relaxed),
-        os_atomic_load(&touch.bad,relaxed),os_atomic_load(&touch.transactions,relaxed),
-        os_atomic_load(&touch.emitted,relaxed),os_atomic_load(&touch.last_header,relaxed));
-    printf("VERMEER TOUCH: clock-snapshot vote=%08x core2x=%08x core=%08x master=%08x slave=%08x se4=%08x root=%08x cfg=%08x dfs=%08x\n",
-        os_atomic_load(&touch.clock_vote,relaxed),os_atomic_load(&touch.clock_core2x,relaxed),
-        os_atomic_load(&touch.clock_core,relaxed),os_atomic_load(&touch.clock_master,relaxed),
-        os_atomic_load(&touch.clock_slave,relaxed),os_atomic_load(&touch.clock_se,relaxed),
-        os_atomic_load(&touch.clock_root,relaxed),os_atomic_load(&touch.clock_cfg,relaxed),os_atomic_load(&touch.clock_dfs,relaxed));
-    printf("VERMEER TOUCH: spi-snapshot phase=%u irq=%08x status=%08x\n",
-        os_atomic_load(&touch.spi_phase,relaxed),os_atomic_load(&touch.spi_irq,relaxed),os_atomic_load(&touch.spi_status,relaxed));
-    printf("VERMEER TOUCH: frame-retries=%llu\n",os_atomic_load(&touch.hid_retries,relaxed));
+    uint64_t ctr;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
+    size_t line=4u<<((ctr>>16)&15u);
+    for(uintptr_t a=(uintptr_t)p&~(line-1),end=(uintptr_t)p+n;a<end;a+=line) {
+        if(clean_only)__asm__ volatile("dc cvac, %0"::"r"(a):"memory");
+        else __asm__ volatile("dc civac, %0"::"r"(a):"memory");
+    }
+    __asm__ volatile("dsb sy":::"memory");
 }
+static void vt_dma_clean(void *ctx,void *p,size_t n){(void)ctx;vt_cache(p,n,1);}
+static void vt_dma_flush(void *ctx,void *p,size_t n){(void)ctx;vt_cache(p,n,0);}
+/* The MMU's own answer (AT S1E1R, as mmu_kvtop); ml_vtophys if the probe faults. */
+static uint64_t vt_vtop(const void *p)
+{
+    vm_offset_t va=(vm_offset_t)p;
+    boolean_t enabled=ml_set_interrupts_enabled(FALSE);
+    uint64_t par;
+    __asm__ volatile("at s1e1r, %1\n\tisb\n\tmrs %0, par_el1":"=r"(par):"r"(va):"memory");
+    ml_set_interrupts_enabled(enabled);
+    if(!(par&1u))return (par&0x0000fffffffff000ull)|(va&0xfffu);
+    return ml_vtophys(va);
+}
+
 static int vt_emit_frame(const struct vt_frame *frame)
 {
     /* Once the controller report is acknowledged, retain it here until the
@@ -105,36 +134,56 @@ static int vt_emit_frame(const struct vt_frame *frame)
     }
     printf("VERMEER TOUCH: complete HID frame unavailable after bounded retry\n");return 0;
 }
+static int vt_xfer(unsigned n)
+{
+    touch.last_err=geni_spi_transfer(&touch.spi,touch.tx,touch.rx,n,0);
+    return touch.last_err==0;
+}
 static int vt_spi_read(uint32_t addr,uint8_t *out,unsigned n)
 {
-    if(!n || n>1024)return 0;
+    if(!out || !n || n>sizeof(touch.tx)-8 || addr<0x10000 || addr>0x200000u-n)return 0;   /* one DMA page per direction */
     bzero(touch.tx,n+8);touch.tx[0]=0xf1;
     for(unsigned i=0;i<4;i++)touch.tx[1+i]=(uint8_t)(addr>>(24-i*8));
     touch.tx[5]=touch.tx[6]=touch.tx[7]=0xff;
-    int ok=vg_transfer(&touch.bus,touch.tx,touch.rx,n+8);
-    os_atomic_store(&touch.spi_phase,touch.bus.phase,relaxed);os_atomic_store(&touch.spi_irq,touch.bus.last_irq,relaxed);
-    os_atomic_store(&touch.spi_status,touch.bus.last_status,relaxed);
-    if(!ok)return 0;
+    if(!vt_xfer(n+8))return 0;
     bcopy(touch.rx+8,out,n);os_atomic_inc(&touch.transactions,relaxed);return 1;
 }
-static int vt_ack_event(void)
+/* Berlin SPI write: 0xf0, 32-bit address, data (goodix_berlin_spi.c). */
+static int vt_spi_write(uint32_t addr,const uint8_t *data,unsigned n)
 {
-    /* The only controller data write: clear the verified event status byte.
-     * info.event is accepted only after GT9916 identity and IC-info checks.
-     */
-    uint32_t addr=touch.info.event;touch.tx[0]=0xf0;
+    if(!data || !n || n>sizeof(touch.tx)-5 || addr<0x10000 || addr>0x200000u-n)return 0;
+    touch.tx[0]=0xf0;
     for(unsigned i=0;i<4;i++)touch.tx[i+1]=(uint8_t)(addr>>(24-i*8));
-    touch.tx[5]=0;
-    int ok=vg_transfer(&touch.bus,touch.tx,touch.rx,6);
-    os_atomic_store(&touch.spi_phase,touch.bus.phase,relaxed);os_atomic_store(&touch.spi_irq,touch.bus.last_irq,relaxed);
-    os_atomic_store(&touch.spi_status,touch.bus.last_status,relaxed);
-    if(!ok)return 0;
+    bcopy(data,touch.tx+5,n);
+    if(!vt_xfer(n+5))return 0;
     os_atomic_inc(&touch.transactions,relaxed);return 1;
+}
+/* brl_send_cmd: struct goodix_ts_cmd {state, ack, len, cmd, data[10]} (16 bytes) with a u8-sum LE16 checksum over
+ * len..data appended, written to misc.cmd_addr; the firmware sets ack = 0x80 when it took the command. */
+static int vt_send_cmd(uint8_t cmd,const uint8_t *data,unsigned n)
+{
+    uint8_t buf[16]={0},back[16];
+    if(!touch.info.cmd || n>8)return 0;
+    buf[2]=(uint8_t)(n+4);buf[3]=cmd;
+    for(unsigned i=0;i<n;i++)buf[4+i]=data[i];
+    unsigned sum=0;for(unsigned i=2;i<2+n+2;i++)sum+=buf[i];
+    buf[4+n]=(uint8_t)sum;buf[5+n]=(uint8_t)(sum>>8);
+    for(unsigned tries=0;tries<6;tries++) {
+        if(!vt_spi_write(touch.info.cmd,buf,sizeof(buf)))return 0;
+        for(unsigned i=0;i<6;i++) {
+            if(!vt_spi_read(touch.info.cmd,back,sizeof(back)))return 0;
+            touch.cmd_ack=back[1];
+            if(back[1]==0x80){vt_sleep(2);return 1;}
+            if(back[1]==0x02 || back[1]==0x00){vt_sleep(1);continue;}
+            vt_sleep(back[1]==0x03?10:1);break;
+        }
+    }
+    return 0;
 }
 static int vt_clock_enable(void)
 {
     touch.gcc=ml_io_map(VT_GCC,0x54000);
-    if(!touch.gcc)return 0;
+    if(!touch.gcc){vt_reason("GCC map failed");return 0;}
     uint32_t before=vt_rd(touch.gcc,VT_VOTE);
     touch.vote_added=VT_CLOCKS&~before;
     vt_wr(touch.gcc,VT_VOTE,before|VT_CLOCKS);
@@ -147,10 +196,9 @@ static int vt_clock_enable(void)
         os_atomic_store(&touch.clock_slave,slave,relaxed);os_atomic_store(&touch.clock_se,se,relaxed);
         os_atomic_store(&touch.clock_root,cmd,relaxed);os_atomic_store(&touch.clock_cfg,vt_rd(touch.gcc,VT_RCG+4),relaxed);
         os_atomic_store(&touch.clock_dfs,vt_rd(touch.gcc,VT_RCG+0x14),relaxed);
-        if(vtc_ready(votes,core2x,core,master,slave,se)){vt_status();return 1;}
+        if(vtc_ready(votes,core2x,core,master,slave,se))return 1;
         /* Match clk_rcg2_set_force_enable when SE4's root is parked. This
          * requests the existing root only: no rate, parent, DFS or PLL edit.
-         * The bit is undone on failure after the engine is quiescent.
          */
         if(i==100 && (votes&VT_CLOCKS)==VT_CLOCKS && (se&0x80000000u) &&
            (cmd&0x80000000u) && !(cmd&3u)) {
@@ -158,29 +206,77 @@ static int vt_clock_enable(void)
         }
         delay(10);
     }
-    printf("VERMEER TOUCH: SE4/AHB clock vote did not become ready\n");return 0;
+    vt_reason("SE4/AHB clock vote not ready");return 0;
+}
+/* clk-rcg2.c: source rate by select (gcc_parent_map_0: 0 TCXO, 1 GPLL0 600 MHz, 6 GPLL0 even 300 MHz), half-integer
+ * divider, then M/N (N stored inverted). Same arithmetic as sheng's TouchBoard.h. */
+static uint64_t vt_rcg_hz(uint32_t cfg,uint32_t mreg,uint32_t nreg)
+{
+    unsigned src=(cfg>>8)&7,mode=(cfg>>12)&3,hid=cfg&0x1f;
+    uint64_t f=src==0?19200000ull:src==1?600000000ull:src==6?300000000ull:0;
+    if(hid){f*=2;f/=hid+1;}
+    if(mode){uint32_t m=mreg&0xffff,n=((~nreg)&0xffff)+m;if(n){f*=m;f/=n;}}
+    return f;
+}
+/* Highest SPI rate not above target over the DFS levels (level selected through GENI_CLK_SEL). */
+static int vt_choose_clock(unsigned target)
+{
+    int found=0;uint64_t best=0;
+    unsigned os=touch.spi.oversampling?touch.spi.oversampling:1;
+    int dfs=vt_rd(touch.gcc,VT_RCG+0x14)&1u;
+    for(unsigned l=0;l<(dfs?8u:1u);l++) {
+        uint64_t f=dfs?vt_rcg_hz(vt_rd(touch.gcc,VT_RCG+0x1c+4*l),vt_rd(touch.gcc,VT_RCG+0x5c+4*l),vt_rd(touch.gcc,VT_RCG+0x9c+4*l))
+                      :vt_rcg_hz(vt_rd(touch.gcc,VT_RCG+4),vt_rd(touch.gcc,VT_RCG+8),vt_rd(touch.gcc,VT_RCG+0xc));
+        if(!f)continue;
+        uint64_t d=(f+(uint64_t)os*target-1)/((uint64_t)os*target);if(d<1)d=1;if(d>0xfff)continue;
+        uint64_t actual=f/(os*d);if(actual>target)continue;
+        if(!found || actual>best){found=1;best=actual;touch.level=l;touch.div=(unsigned)d;touch.sclk=f;}
+    }
+    return found;
+}
+/* Engine DMA buffers and the QUP stream's SMMU pass-through (sheng TouchProbe prepareDma). */
+static int vt_dma_prepare(void)
+{
+    uint64_t tx=vt_vtop(vt_dma.tx),rx=vt_vtop(vt_dma.rx);
+    if(!tx || !rx || (tx&0xfffu) || (rx&0xfffu) ||
+       vt_vtop(vt_dma.tx+4095)!=tx+4095 || vt_vtop(vt_dma.rx+4095)!=rx+4095){vt_reason("DMA page translation failed");return 0;}
+    bzero(&vt_dma,sizeof(vt_dma));vt_cache(&vt_dma,sizeof(vt_dma),0);
+    touch.smmu=ml_io_map(VT_SMMU,VT_SMMU_SIZE);
+    if(!touch.smmu){vt_reason("SMMU map failed");return 0;}
+    uint64_t lo=tx<rx?tx:rx,hi=(tx<rx?rx:tx)+4096u;
+    struct smmu_io io={(void *)touch.smmu,vt_smmu_rd,vt_smmu_wr};
+    struct smmu_plan plan=smmu_plan_bypass(&io,VT_QUP_SID,lo,hi-lo);
+    touch.smmu_slot=(int)plan.slot;
+    const char *e=smmu_configure_bypass(&io,&plan,VT_QUP_SID);
+    if(e){vt_reason(e);return 0;}
+    touch.spi.use_dma=1;
+    touch.spi.dma=(struct geni_dma){.ctx=NULL,.clean=vt_dma_clean,.clean_inval=vt_dma_flush,.inval=vt_dma_flush,
+        .tx_virt=vt_dma.tx,.rx_virt=vt_dma.rx,.tx_phys=tx,.rx_phys=rx,.size=sizeof(vt_dma.tx)};
+    return 1;
 }
 static int vt_engine_setup(void)
 {
-    touch.se=ml_io_map(VT_SE,0x4000);touch.gpio=ml_io_map(VT_GPIO,0x30000);
-    if(!touch.se || !touch.gpio)return 0;
-    touch.bus=(struct vg_bus){.ctx=NULL,.read=vt_read,.write=vt_write,.pause=vt_pause};
-    unsigned proto=(vt_rd(touch.se,0x68)>>8)&255u;
-    uint32_t tx=vt_rd(touch.se,0xe24),rx=vt_rd(touch.se,0xe28);
-    touch.bus.tx_depth=(tx>>16)&255u;touch.bus.rx_depth=(rx>>16)&255u;
-    uint32_t interface=vt_rd(touch.se,0x64);
-    printf("VERMEER TOUCH: SE4 firmware=%u TX=%08x RX=%08x reset=%08x interface=%08x\n",
-        proto,tx,rx,vt_rd(touch.gpio,24*0x1000+4),interface);
-    if(proto!=1 || ((tx>>24)&63)!=32 || ((rx>>24)&63)!=32 ||
-       touch.bus.tx_depth<4 || touch.bus.rx_depth<4 || !vg_idle(&touch.bus))return 0;
-    if(interface&1u){printf("VERMEER TOUCH: FIFO interface disabled; DMA transport required\n");return 0;}
-    /* ABL must already have the controller out of reset. Do not power-cycle
-     * unknown rails or substitute an unverified reset/firmware sequence.
+    touch.se=ml_io_map(VT_SE,0x4000);touch.gpio=ml_io_map(VT_GPIO,0x30000);touch.wrapper=ml_io_map(VT_WRAPPER,0x2000);
+    if(!touch.se || !touch.gpio || !touch.wrapper){vt_reason("SE4/TLMM/QUP map failed");return 0;}
+    touch.spi.se=(struct geni_io){(void *)touch.se,vt_io_rd,vt_io_wr,vt_io_delay};
+    touch.spi.wrapper=(struct geni_io){(void *)touch.wrapper,vt_io_rd,vt_io_wr,vt_io_delay};
+    if(geni_spi_read_info(&touch.spi)){vt_reason("SE4 info read failed");return 0;}
+    os_atomic_store(&touch.engine_proto,touch.spi.info.protocol,relaxed);
+    os_atomic_store(&touch.interface,touch.spi.info.if_disable,relaxed);
+    if(touch.spi.info.protocol!=GENI_PROTO_SPI){vt_reason("SE4 firmware is not SPI");return 0;}
+    /* Power-on, goodix_berlin_power_on order: reset (GPIO24, active low) held low as a GPIO output, iovdd
+     * (L12B 1.8 V) through RPMh, 3 ms, avdd (L2B 3.2 V), 15 ms, reset high; the device confirm and the 100 ms
+     * firmware boot follow once the bus is up. ABL leaves both rails off (r28s read all zeros, IRQ low).
      */
-    uint32_t reset=vt_rd(touch.gpio,24*0x1000),level=vt_rd(touch.gpio,24*0x1000+4);
-    if(((reset&0x200u) && !(level&2u)) || (!(reset&0x200u) && !(level&1u)))return 0;
-    for(unsigned i=0;i<VT_NREGS;i++)touch.saved[i]=vt_rd(touch.se,vt_offsets[i]);
-    touch.engine_saved=true;
+    uint32_t reset=vt_rd(touch.gpio,24*0x1000);
+    vt_wr(touch.gpio,24*0x1000+4,0);
+    vt_wr(touch.gpio,24*0x1000,(reset&~0x3fcu)|0x200u|(1u<<6));   /* GPIO function, output, 4 mA */
+    touch.stage_detail=1;   /* the RSC is the next new MMIO: a freeze here names it */
+    if(!kr_init() || !kr_ldo_on(1,"ldob12",1800)){vt_reason(kr.error?kr.error:"RPMh iovdd vote failed");return 0;}
+    vt_sleep(3);
+    if(!kr_ldo_on(0,"ldob2",3200)){vt_reason(kr.error?kr.error:"RPMh avdd vote failed");return 0;}
+    touch.stage_detail=2;
+    vt_sleep(15);   /* reset stays low until the SPI engine is ready, so the device confirm lands right after it */
     for(unsigned i=0;i<4;i++) {
         unsigned reg=(44+i)*0x1000;touch.pins[i]=vt_rd(touch.gpio,reg);
         /* Exact active DT: ALT1, 6mA; pulldown MISO/MOSI/SCLK, pullup CS. */
@@ -188,41 +284,39 @@ static int vt_engine_setup(void)
         vt_wr(touch.gpio,reg,value);
     }
     touch.pins_saved=true;
-    vt_wr(touch.se,0x614,0);vt_wr(touch.se,0x644,0);vt_wr(touch.se,0xe1c,0);
-    vt_wr(touch.se,0xe18,0);vt_wr(touch.se,0x258,0); /* FIFO, no GPI/DMA */
-    vt_wr(touch.se,0x28,vt_rd(touch.se,0x28)|0x7f);
-    vt_wr(touch.se,0xe30,vt_rd(touch.se,0xe30)|0xf);
-    vt_wr(touch.se,0x24,0x7f);vt_wr(touch.se,0x20,1);
-    vt_wr(touch.se,0x224,0);vt_wr(touch.se,0x22c,0);vt_wr(touch.se,0x230,0);
-    vt_wr(touch.se,0x24c,0);vt_wr(touch.se,0x250,0);vt_wr(touch.se,0x25c,0);
-    vt_wr(touch.se,0x268,4);vt_wr(touch.se,0x254,0);
-    /* MSB-first 4x8 packing, vectors start7,15,23,31; final stop bit. */
-    vt_wr(touch.se,0x260,vg_pack(0));vt_wr(touch.se,0x264,vg_pack(2));
-    vt_wr(touch.se,0x284,vg_pack(0));vt_wr(touch.se,0x288,vg_pack(2));
-    vt_wr(touch.se,0x274,0);vt_wr(touch.se,0x278,0);
-    vt_wr(touch.se,0x80c,0);vt_wr(touch.se,0x810,0);vt_wr(touch.se,0x814,touch.bus.rx_depth-2);
-    /* Raw status latches enabled, controller delivery disabled for polling. */
-    vt_wr(touch.se,0x614,0x7eu|VG_ERRORS|1u|(1u<<26)|(1u<<27)|(1u<<30));
-    /* Retain the existing GCC root/DFS/PLL configuration and use a large
-     * internal divider (128). No clock-rate or regulator programming.
-     */
-    vt_wr(touch.se,0x7c,0);vt_wr(touch.se,0x48,(128u<<4)|1u);
-    vg_wr(&touch.bus,VG_CLEAR,0xffffffffu);
+    if(touch.spi.info.fifo_disabled && !vt_dma_prepare())return 0;
+    touch.engine_touched=true;
+    touch.spi.poll_limit=200000;
+    touch.spi.poll_only=2;   /* sheng: keep the top-level IRQ enable so the status registers stay visible to the poll */
+    int r=geni_spi_init(&touch.spi);
+    if(r){touch.last_err=r;vt_reason("GENI SPI init refused");return 0;}
+    if(!vt_choose_clock(VT_SPI_HZ)){vt_reason("no SE4 clock level fits");return 0;}
+    r=geni_spi_set_clock(&touch.spi,VT_SPI_HZ,(unsigned)touch.sclk,touch.level);
+    if(!r)r=geni_spi_setup(&touch.spi,0,0);
+    if(r){touch.last_err=r;vt_reason("GENI SPI clock/mode refused");return 0;}
+    /* goodix_berlin_power_on, after reset release: 4 ms, then confirm the device (write 8 x 0xAA to the boot
+     * option, read it back; up to 3 tries 5 ms apart), then 100 ms for the firmware to boot. Without the
+     * confirm the controller can stay in its boot ROM: it answers the version read but never scans. */
+    vt_wr(touch.gpio,24*0x1000+4,2);
+    os_atomic_store(&touch.reset_level,vt_rd(touch.gpio,24*0x1000+4),relaxed);
+    vt_sleep(4);
+    touch.confirmed=0;
+    for(unsigned tries=0;tries<3 && !touch.confirmed;tries++) {
+        uint8_t back[8];
+        static const uint8_t aa[8]={0xaa,0xaa,0xaa,0xaa,0xaa,0xaa,0xaa,0xaa};
+        if(vt_spi_write(0x10000,aa,8) && vt_spi_read(0x10000,back,8) && !memcmp(aa,back,8))touch.confirmed=1;
+        else vt_sleep(5);
+    }
+    if(!touch.confirmed){vt_reason("device boot confirmation failed");return 0;}
+    vt_sleep(100);
+    os_atomic_store(&touch.irq_level,vt_rd(touch.gpio,25*0x1000+4),relaxed);
     return 1;
 }
 static void vt_restore(void)
 {
-    /* If abort did not quiesce, leave clocks/registers retained until reboot.
-     * Disabling an active engine could turn a recoverable error into a fault.
-     */
-    if(touch.se && (vt_rd(touch.se,VG_STATUS)&0x1001u)) {
-        printf("VERMEER TOUCH: active engine retained after timeout; no further transfers\n");return;
-    }
-    if(touch.engine_saved) {
-        vt_wr(touch.se,0x20,1); /* inactive chip select after a cancelled transfer */
-        vg_wr(&touch.bus,VG_CLEAR,0xffffffffu);vt_wr(touch.se,0x648,0xffffffffu);
-        for(unsigned i=0;i<VT_NREGS;i++)vt_wr(touch.se,vt_offsets[i],touch.saved[i]);
-    }
+    /* Once the engine has been programmed (and maybe left mid-transfer) everything stays as it is until
+     * reboot: disabling an active engine or its clocks could turn a recoverable error into a fault. */
+    if(touch.engine_touched)return;
     if(touch.pins_saved)for(unsigned i=0;i<4;i++)vt_wr(touch.gpio,(44+i)*0x1000,touch.pins[i]);
     if(touch.gcc && touch.root_forced)vt_wr(touch.gcc,VT_RCG,vt_rd(touch.gcc,VT_RCG)&~2u);
     if(touch.gcc && touch.vote_added)
@@ -231,23 +325,69 @@ static void vt_restore(void)
 static int vt_identify(void)
 {
     uint8_t version[28],length[2],data[1024];
-    if(!vt_spi_read(0x10014,version,sizeof(version)) || !vt_version_9916(version,sizeof(version))) {
-        printf("VERMEER TOUCH: GT9916 identity unavailable; no controller data write\n");return 0;
-    }
-    if(!vt_spi_read(0x10070,length,2))return 0;
+    if(!vt_spi_read(0x10014,version,sizeof(version))){vt_reason("SPI version read failed");return 0;}
+    /* What came back: all 00 or all ff means nobody answered (no power or still in reset). */
+    os_atomic_store(&touch.last_header,vt_le32(version),relaxed);
+    if(!vt_version_9916(version,sizeof(version))){vt_reason("not a GT9916 (version check)");return 0;}
+    if(!vt_spi_read(0x10070,length,2)){vt_reason("SPI IC-info length read failed");return 0;}
     unsigned n=vt_le16(length);
     if(n<181 || n>=sizeof(data) || !vt_spi_read(0x10070,data,n) || !vt_info_decode(data,n,&touch.info)) {
-        printf("VERMEER TOUCH: IC-info guard refused; no controller data write\n");return 0;
+        vt_reason("IC-info guard refused");return 0;
     }
-    printf("VERMEER TOUCH: GT9916 verified, event=%08x axes=%ux%u\n",
-        touch.info.event,touch.info.max_x,touch.info.max_y);return 1;
+    printf("VERMEER TOUCH: GT9916 verified, event=%08x axes=%ux%u\n",touch.info.event,touch.info.max_x,touch.info.max_y);
+    return 1;
+}
+/* Host touch processing. Vermeer's GT9916 firmware leaves coordinates to Android's THP stack (Xiaomi's driver reads
+ * thp_frame from misc.frame_data_addr when enable_touch_raw is set; in coordinate mode not one event ever arrived,
+ * r30s-r32s), so, as sheng does for its Novatek panel, contacts are computed here from capacitance frames.
+ * 0x90/0x82 selects firmware-baselined difference frames (brld_get_cap_data); a frame is ready when bit 7 of the
+ * byte at frame_data_addr is set, the matrix (tx-major: [drv][sen], int16 LE) follows the frame head, attribute
+ * and log blocks and 8 more bytes, and the flag is cleared by writing 0 (brl_after_event_handler).
+ * Boot args: k70-touch-thr (signal threshold, default 200), k70-touch-map (bit0 swap which matrix axis is the
+ * screen's long axis, bit1 mirror x, bit2 mirror y). */
+static struct vtt_work vt_thp;
+static uint8_t vt_fbuf[4096];
+static struct { unsigned thr,map,frames,peaks,mode_ok; int max,max_t,max_r; } thp;
+static int vt_thp_start(void)
+{
+    unsigned t=touch.info.tx,r=touch.info.rx;
+    if(!touch.info.frame || !vtt_shape(t,r,touch.info.frame_skip))return 0;
+    thp.thr=200;thp.map=0;
+    PE_parse_boot_argn("k70-touch-thr",&thp.thr,sizeof(thp.thr));
+    PE_parse_boot_argn("k70-touch-map",&thp.map,sizeof(thp.map));
+    static const uint8_t diff=0x82,zero=0;
+    thp.mode_ok=vt_send_cmd(0x90,&diff,1);
+    if(thp.thr<1 || thp.thr>32768 || thp.map>7 || !thp.mode_ok ||
+       !vt_spi_write(touch.info.frame,&zero,1))return 0;
+    return 1;
+}
+/* 1: a new frame is in vt_m, 0: none ready yet, -1: bus failure */
+static int vt_thp_frame(void)
+{
+    uint8_t flag=0;
+    static const uint8_t zero=0;
+    if(!vt_spi_read(touch.info.frame,&flag,1))return -1;
+    if(!(flag&0x80u))return 0;
+    unsigned nodes=touch.info.tx*touch.info.rx,off=touch.info.frame_skip+8;
+    if(!vt_spi_read(touch.info.frame,vt_fbuf,off+nodes*2))return -1;
+    if(!vt_spi_write(touch.info.frame,&zero,1))return -1;
+    if(!vtt_decode(&vt_thp,vt_fbuf,off+nodes*2,touch.info.tx,touch.info.rx,touch.info.frame_skip))return -1;
+    thp.frames++;
+    return 1;
+}
+static int vt_thp_process(void)
+{
+    struct vt_frame frame={0};
+    if(!vtt_process(&vt_thp,touch.info.tx,touch.info.rx,thp.thr,thp.map,&touch.contacts,&frame))return 0;
+    if(!vt_emit_frame(&frame))return 0;
+    os_atomic_inc(&touch.reports,relaxed);return 1;
 }
 static void vt_thread(void *arg,wait_result_t result)
 {
     (void)arg;(void)result;
-    /* The HID service may be registered by IOKit after Apple userspace starts. */
+    /* NativeHidInput registers its sink once IOHIDFamily has matched it. */
     for(unsigned i=0;i<1800 && !sweet_hid_touch_ready();i++)vt_sleep(100);
-    if(!sweet_hid_touch_ready())goto stopped;
+    if(!sweet_hid_touch_ready()){vt_reason("HID touch sink never registered");goto stopped;}
     os_atomic_store(&touch.stage,VT_CLOCK,relaxed);
     if(!vt_clock_enable())goto stopped;
     os_atomic_store(&touch.stage,VT_FIRMWARE,relaxed);
@@ -255,44 +395,20 @@ static void vt_thread(void *arg,wait_result_t result)
     os_atomic_store(&touch.stage,VT_IDENTITY,relaxed);
     if(!vt_identify())goto stopped;
     os_atomic_store(&touch.stage,VT_READY,relaxed);
-    printf("VERMEER TOUCH: physical GT9916 input ready (SPI FIFO, atomic HID frames v2)\n");
-    unsigned consecutive_bad=0;
+    vt_reason("GT9916 ready");
+    if(!vt_thp_start()){vt_reason("THP mode/geometry refused");goto stopped;}
+    printf("VERMEER TOUCH: physical GT9916 input ready (SE DMA, RPMh, THP, atomic HID)\n");
     for(;;) {
-        uint8_t packet[90];
-        if(!vt_spi_read(touch.info.event,packet,8))break;
-        os_atomic_store(&touch.last_header,vt_le32(packet),relaxed);
-        /* A cleared status can retain the previous payload/checksum. */
-        if(!(packet[0]&0xe0u)){vt_sleep(8);continue;}
-        if(!vt_checksum(packet,8))goto bad_packet;
-        if(packet[0]&0x60u) {
-            printf("VERMEER TOUCH: controller request/gesture status=%02x code=%02x; requires verified runtime setup\n",packet[0],packet[2]);
-            break;
-        }
-        if(!(packet[0]&0x80u)){vt_sleep(8);continue;}
-        unsigned count=packet[2]&15u;
-        if(count>10)goto bad_packet;
-        unsigned n=count?8+count*8+2:8;
-        if(n>8 && !vt_spi_read(touch.info.event+8,packet+8,n-8))break;
-        struct vt_frame frame;
-        if(vt_decode(packet,n,touch.info.max_x,touch.info.max_y,&frame)!=VT_TOUCH)goto bad_packet;
-        /* Commit a fully verified frame only after the acknowledgement
-         * completed; a failed transaction must not create stuck contacts.
-         */
-        if(!vt_ack_event())break;
-        if(!vt_emit_frame(&frame))break;
-        os_atomic_inc(&touch.reports,relaxed);consecutive_bad=0;vt_sleep(8);continue;
-bad_packet:
-        os_atomic_inc(&touch.bad,relaxed);
-        if(++consecutive_bad>=3)break;
-        vt_sleep(8);
+        int r=vt_thp_frame();
+        if(r<0){vt_reason("SPI frame read failed");goto stopped;}
+        if(!r){vt_sleep(4);continue;}
+        if(!vt_thp_process()){vt_reason("HID frame dispatch failed");goto stopped;}
+        vt_sleep(4);
     }
 stopped:
-    {
-        struct vt_frame empty={0};unsigned held=0;
-        for(unsigned i=0;i<VT_CONTACTS;i++)held|=touch.contacts.point[i].active;
-        if(held && !vt_emit_frame(&empty))printf("VERMEER TOUCH: HID release pending at stop\n");
-    }
-    vt_restore();os_atomic_store(&touch.stage,VT_STOPPED,relaxed);vt_status();
+    { struct vt_frame empty={0};
+      if(!vt_emit_frame(&empty))vt_reason("HID release pending at stop"); }
+    vt_restore();os_atomic_store(&touch.stage,VT_STOPPED,relaxed);
     thread_terminate(current_thread());
 }
 void vermeer_touch_start(void)
@@ -309,5 +425,18 @@ void vermeer_touch_start(void)
     kern_return_t result=kernel_thread_start(vt_thread,NULL,&thread);
     if(result==KERN_SUCCESS)thread_deallocate(thread);
     else os_atomic_store(&touch.stage,VT_STOPPED,relaxed);
+}
+static void vt_status(void)
+{
+    printf("VERMEER TOUCH: stage=%u reports=%llu bad=%llu spi=%llu emitted=%llu retries=%llu\n",
+        os_atomic_load(&touch.stage,relaxed),os_atomic_load(&touch.reports,relaxed),
+        os_atomic_load(&touch.bad,relaxed),os_atomic_load(&touch.transactions,relaxed),
+        os_atomic_load(&touch.emitted,relaxed),os_atomic_load(&touch.hid_retries,relaxed));
+    printf("VERMEER TOUCH: clock-snapshot vote=%08x core=%08x se4=%08x\n",
+        os_atomic_load(&touch.clock_vote,relaxed),os_atomic_load(&touch.clock_core,relaxed),
+        os_atomic_load(&touch.clock_se,relaxed));
+    printf("VERMEER TOUCH: spi-snapshot protocol=%u interface=%08x reset=%u irq=%u\n",
+        os_atomic_load(&touch.engine_proto,relaxed),os_atomic_load(&touch.interface,relaxed),
+        os_atomic_load(&touch.reset_level,relaxed),os_atomic_load(&touch.irq_level,relaxed));
 }
 #endif

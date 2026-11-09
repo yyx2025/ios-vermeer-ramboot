@@ -30,18 +30,11 @@ static inline int vth_prepare(const struct vth_state *old,const struct vt_frame 
         if(f->active>1 || (f->active && (f->x>=1440 || f->y>=3200)))return -1;
         *after=*before;after->down=f->active;
         if(f->active) {
-            int32_t x=(int32_t)f->x-157,y=(int32_t)f->y-382;
-            if(x<0)x=0;
-            if(x>1124)x=1124;
-            if(y<0)y=0;
-            if(y>2435)y=2435;
-            /* Edge origin belongs to the centered visible canvas, including
-             * a finger entering from the physical panel's black margins.
-             * Keep it throughout contact lifetime; moving from the center
-             * to an edge must not retroactively become an edge gesture. */
-            if(!before->down)after->edge=x<48 || x>=1125-48 || y<48 || y>=2436-48;
-            after->x=(int32_t)(((int64_t)x<<16)/1125);
-            after->y=(int32_t)(((int64_t)y<<16)/2436);
+            int32_t x=f->x,y=f->y;
+            /* Preserve origin for the complete contact lifetime. */
+            if(!before->down)after->edge=x<62 || x>=1440-62 || y<64 || y>=3200-64;
+            after->x=(int32_t)(((int64_t)x<<16)/1440);
+            after->y=(int32_t)(((int64_t)y<<16)/3200);
         }
         if(before->down!=after->down){p.mask[i]|=VTH_TOUCH;changed=1;}
         if(after->down && (!before->down || before->x!=after->x || before->y!=after->y)) {

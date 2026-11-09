@@ -5,7 +5,7 @@
 #ifndef VERMEER_GOODIX_INFO_H
 #define VERMEER_GOODIX_INFO_H
 #include "vermeer_goodix_packet.h"
-struct vt_info { uint32_t event; uint16_t max_x,max_y; };
+struct vt_info { uint32_t event; uint16_t max_x,max_y; uint32_t cmd,state,frame,frame_skip; uint8_t tx,rx; };
 static inline uint32_t vt_le32(const uint8_t *p)
 { return vt_le16(p)|((uint32_t)vt_le16(p+2)<<16); }
 static inline int vt_info_decode(const uint8_t *p,unsigned n,struct vt_info *out)
@@ -21,10 +21,17 @@ static inline int vt_info_decode(const uint8_t *p,unsigned n,struct vt_info *out
     }
     /* 122-byte misc block, 20-byte other block, then checksum/extensions. */
     if(pos>n-2 || n-2-pos<142)return 0;
+    /* goodix_ic_info_misc (packed): cmd_addr +0, fw_state_addr +12, frame_data_addr +24, frame head/attr/log
+     * lengths +28/+30/+32, touch_data_addr +44. */
     struct vt_info info={vt_le32(p+pos+44),
-        (uint16_t)vt_le16(p+pos+122+16),(uint16_t)vt_le16(p+pos+122+18)};
+        (uint16_t)vt_le16(p+pos+122+16),(uint16_t)vt_le16(p+pos+122+18),vt_le32(p+pos),vt_le32(p+pos+12),
+        vt_le32(p+pos+24),vt_le16(p+pos+28)+vt_le16(p+pos+30)+vt_le16(p+pos+32),
+        p[2+16+10],p[2+16+10+1]};   /* convert_ic_info: parm.drv_num, parm.sen_num follow version and feature */
     if(vt_le16(p+pos+48)!=8 || vt_le16(p+pos+50)!=8 ||
        info.event<0x10000 || info.event>0x1fffff-90 ||
+       info.cmd<0x10000 || info.cmd>0x200000-16 ||
+       info.state<0x10000 || info.state>0x200000-4 ||
+       info.frame<0x10000 || info.frame>0x200000-4096 ||
        !info.max_x || !info.max_y)return 0;
     *out=info;return 1;
 }

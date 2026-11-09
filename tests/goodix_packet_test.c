@@ -26,6 +26,7 @@ int main(void)
     uint8_t info[187]={0};info[0]=187;
     info[32]=2;info[37]=1;
     unsigned misc=43;
+    info[misc+2]=1;info[misc+14]=1;info[misc+26]=1;
     info[misc+44]=0x40;info[misc+46]=1;
     info[misc+48]=8;info[misc+50]=8;
     info[misc+138]=0x38;info[misc+139]=4;

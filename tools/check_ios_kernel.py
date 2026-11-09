@@ -28,7 +28,7 @@ if '--gui' in sys.argv:
                  b'vermeer_touch', b'VERMEER TOUCH: IC-info guard refused',
                  b'VERMEER TOUCH: clock-snapshot', b'VERMEER TOUCH: spi-snapshot',
                  b'VERMEER HID: atomic physical frames and canvas-edge origin v2',
-                 b'VERMEER FB: logical canvas 1125x2436 centered in 1440x3200',
+                 b'VERMEER FB: logical canvas 1125x2436 scaled to full panel 1440x3200',
                  b'VERMEER SAMPLE: read-only dyld maps and USB requests enabled',
                  b'IMG %s[%d] base', b'selected tasks only')
 missing = [s.decode() for s in required if s not in data]
