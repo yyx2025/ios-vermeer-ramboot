@@ -46,7 +46,9 @@ if '--ram-preload' in sys.argv:
                b'loader supplied compressed root; no XNU USB receiver required',
                b'verifying preloaded full-root SHA256 before use',
                b'preloaded root ready; block decompression stays in RAM',
-               b'preloaded root setup failed: %d; storage untouched')
+               b'preloaded root setup failed: %d stage=%s; storage untouched',
+               b'complete file SHA256 matched; root-check v3',
+               b'full-sha256-mismatch', b'index-sha256-mismatch')
     missing += [s.decode() for s in preload if s not in data]
 if missing:
     raise SystemExit('Integrated kernel missing required services: ' + ', '.join(missing))
