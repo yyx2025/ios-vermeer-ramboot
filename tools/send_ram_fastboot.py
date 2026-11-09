@@ -17,13 +17,14 @@ import tempfile
 import time
 import adt
 from ram_stream_config import load_record, file_sha256
+import root_memory_probes
 
 SERIAL = 'VERMEERRAM001'
 VERSION = 'VERMEER-RAM-FASTBOOT-1'
 CHUNK = 64 * 1024 * 1024
 BOOT_LIMIT = 805306368
 QUERIES = {'product','version-bootloader','serialno','max-download-size',
-           'ram-total','ram-received','ram-sha256-lo','ram-sha256-hi'}
+           'ram-total','ram-received','ram-sha256-lo','ram-sha256-hi','ram-sha-mode'}
 
 class Fastboot:
     def __init__(self, executable, log):
@@ -97,6 +98,20 @@ def preflight(image, root_json):
     chosen=next(c for c in tree.children if c.name=='chosen')
     if used!=adt_bytes or chosen.prop('vermeer-ram-config')!=config or chosen.prop('vermeer-ram-preloaded')!=struct.pack('<I',1):
         raise ValueError('Embedded root configuration/seal mismatch')
+    probes,_=root_memory_probes.make_probes(packed,root['packed_bytes'],root['packed_sha256'])
+    if chosen.prop('vermeer-ram-probes')!=probes or record.get('stored_root_full_sha256_before_commit') is not True:
+        raise ValueError('Embedded root RAM probes/readback gate mismatch')
+    if record.get('desktop_test_profile') is True:
+        defaults=next(c for c in tree.children if c.name=='defaults')
+        desktop_defaults={'vmm-present':1,'sleep-disabled':1}
+        if record.get('adt_defaults')!=desktop_defaults:
+            raise ValueError('Desktop profile metadata mismatch')
+        for key,value in desktop_defaults.items():
+            values=[v for name,_,v in defaults.props if name==key]
+            if values!=[struct.pack('<I',value)]:
+                raise ValueError('Embedded desktop default mismatch: '+key)
+        if any(options.get(k)!='1' for k in ('vermeer_prepare_root','vermeer_migration_baseline')):
+            raise ValueError('Desktop image lacks first-boot root preparation')
     def no_ramdisk(node):
         if any(n=='RAMDisk' for n,_,_ in node.props): raise ValueError('Unexpected embedded RAMDisk')
         for child in node.children: no_ramdisk(child)
@@ -140,7 +155,7 @@ def upload(fb,packed,total,sha,logs,state,chunk=CHUNK):
             print(f'Root in phone RAM: {sent}/{total} bytes ({sent/total:.1%})',flush=True)
         if source.read(1) or digest.hexdigest()!=sha:
             raise RuntimeError('Transmitted full-root SHA256/length mismatch; XNU was not requested')
-    output=fb.run(['-s',SERIAL,'oem','ram-boot'],timeout=120)
+    output=fb.run(['-s',SERIAL,'oem','ram-boot'],timeout=300)
     if 'root SHA256 verified' not in output or not re.search(r'\bOKAY\b',output):
         raise RuntimeError('No explicit complete-root verification confirmation from the loader')
     state.update(loader_sha256_confirmed=True,xnu_handoff_requested=True)
@@ -169,6 +184,12 @@ def boot_and_upload(fb,image,packed,root,logs,state,wait_seconds=300):
             break
         time.sleep(1)
     else: raise RuntimeError('RAM Fastboot did not appear; keep the final phone screen for the first hardware error')
+    metadata=json.loads(Path(image).with_suffix('.json').read_text(encoding='utf-8'))
+    if metadata.get('ram_sha_acceleration_requested') is True:
+        mode=fb.getvar(SERIAL,'ram-sha-mode')
+        if mode not in ('arm64-sha2','software'):raise RuntimeError('Unknown RAM SHA256 mode')
+        state['ram_sha256_mode']=mode
+        print('RAM SHA256 mode: '+mode,flush=True)
     upload(fb,packed,root['packed_bytes'],root['packed_sha256'],logs,state)
 
 def save_windows_usb(logs):

@@ -53,3 +53,9 @@ assert 'HFS read failed vrs=%d; stage=%s' in stream
 for name in ('vermeer_ram_stream','vermeer_packed_store','lzfse_decode_base','lzfse_fse','lzvn_decode_base'):
     assert name+'.o_CFLAGS_ADD += -mgeneral-regs-only' in (tree/'bsd/conf/Makefile.template').read_text()
 print('Independent full SHA/index/decode/HFS failure stages and scalar verifier objects: PASS')
+assert 'verify_sha_provider();if(error)return error;' in stream
+assert 'verify_root_probes(chosen);if(error)return error;' in stream
+assert stream.index('verify_root_probes(chosen);if(error)return error;') < stream.index('error=receive_finish(NULL);',setup)
+assert 'pmap_find_phys(kernel_pmap,area+entry.offset)' in stream
+assert 'mapped-root-probe-mismatch' in stream and 'root-map-address' in stream
+print('Root RAM witnesses: SHA selftest, physical address and mapped sample gates before full SHA: PASS')

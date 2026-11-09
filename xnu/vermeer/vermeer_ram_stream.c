@@ -56,6 +56,7 @@ extern dev_t mdevadd(int,uint64_t,unsigned int,int);
  * Match XNU-8796; NOWAIT returns table resource shortages to this caller. */
 extern kern_return_t pmap_enter_options(pmap_t,vm_map_offset_t,ppnum_t,
     vm_prot_t,vm_prot_t,unsigned int,boolean_t,unsigned int,void *);
+extern ppnum_t pmap_find_phys(pmap_t,vm_map_offset_t);
 extern void vermeer_usb_debug_start(void);
 extern int vermeer_usb_running(void);
 extern int vermeer_usb_ram_step(void);
@@ -122,6 +123,64 @@ static int receive_begin(void *ctx,uint64_t bytes,const uint8_t *sha)
     SHA256_Init(&transfer_hash);
     printf("VERMEER RAM: receiving complete packed root, %llu bytes; volatile only\n",bytes);
     return 0;
+}
+static int verify_sha_provider(void)
+{
+    static uint8_t data[4096];
+    static const uint8_t abc[32]={0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
+    static const uint8_t pattern[32]={0xd4,0x1d,0x43,0x8c,0x37,0x91,0x10,0xc7,0xf7,0xb2,0xc5,0x61,0xb1,0xf0,0x4f,0x26,0xc1,0xb4,0x54,0x91,0x10,0x79,0x1f,0x8e,0x02,0x2f,0x48,0x97,0x42,0x80,0xc1,0x3e};
+    SHA256_CTX hash;uint8_t actual[32];root_failure_stage="sha256-selftest";
+    SHA256_Init(&hash);SHA256_Update(&hash,"abc",3);SHA256_Final(actual,&hash);
+    if(memcmp(actual,abc,32)) {hash_mismatch(root_failure_stage,abc,actual);return EIO;}
+    for(unsigned i=0;i<sizeof(data);i++)data[i]=(uint8_t)(i*31+7);
+    SHA256_Init(&hash);
+    for(size_t off=0;off<sizeof(data);) {
+        size_t n=sizeof(data)-off;if(n>17)n=17;
+        SHA256_Update(&hash,data+off,n);off+=n;
+    }
+    SHA256_Final(actual,&hash);
+    if(memcmp(actual,pattern,32)) {hash_mismatch(root_failure_stage,pattern,actual);return EIO;}
+    printf("VERMEER ROOT: SHA256 selftest matched; abc and fragmented 4096-byte pattern\n");return 0;
+}
+struct root_probe_header {char magic[8];uint32_t count,entry_bytes;uint64_t packed_bytes;uint8_t sha256[32];};
+struct root_probe_entry {uint64_t offset;uint32_t bytes,reserved;uint8_t sha256[32];};
+_Static_assert(sizeof(struct root_probe_header)==56,"root probe header layout");
+_Static_assert(sizeof(struct root_probe_entry)==48,"root probe entry layout");
+static int verify_root_probes(DTEntry chosen)
+{
+    const void *blob=NULL;unsigned size=0;struct root_probe_header header;
+    root_failure_stage="root-probes-config";
+    if(SecureDTGetProperty(chosen,"vermeer-ram-probes",&blob,&size)!=kSuccess || size<sizeof(header))return EINVAL;
+    memcpy(&header,blob,sizeof(header));
+    if(memcmp(header.magic,"VMRP0001",8) || !header.count || header.count>128 ||
+       header.entry_bytes!=sizeof(struct root_probe_entry) ||
+       size!=sizeof(header)+header.count*sizeof(struct root_probe_entry) ||
+       header.packed_bytes!=config.packed_bytes || memcmp(header.sha256,config.sha256,32))return EINVAL;
+    printf("VERMEER ROOT: RAM witness v4; checking %u mapped 16 KiB samples\n",header.count);
+    for(unsigned i=0;i<header.count;i++) {
+        struct root_probe_entry entry;SHA256_CTX hash;uint8_t actual[32];
+        memcpy(&entry,(const uint8_t *)blob+sizeof(header)+i*sizeof(entry),sizeof(entry));
+        if(entry.reserved || entry.bytes!=16384 || (entry.offset&16383) ||
+           entry.offset>config.packed_bytes || entry.bytes>config.packed_bytes-entry.offset)return EINVAL;
+        root_failure_stage="root-map-address";
+        uint64_t wanted=STREAM_BASE+entry.offset;
+        uint64_t physical=((uint64_t)pmap_find_phys(kernel_pmap,area+entry.offset)<<PAGE_SHIFT);
+        if(physical!=wanted) {
+            printf("VERMEER ROOT: mapping mismatch offset=%llx va=%llx expected-pa=%llx actual-pa=%llx\n",
+                entry.offset,(uint64_t)(area+entry.offset),wanted,physical);return EIO;
+        }
+        root_failure_stage="mapped-root-probe-mismatch";
+        SHA256_Init(&hash);SHA256_Update(&hash,(const void *)(area+entry.offset),entry.bytes);SHA256_Final(actual,&hash);
+        if(memcmp(actual,entry.sha256,32)) {
+            printf("VERMEER ROOT: mapped sample mismatch probe=%u offset=%llx va=%llx pa=%llx\n",
+                i,entry.offset,(uint64_t)(area+entry.offset),physical);
+            const uint8_t *head=(const void *)(area+entry.offset);
+            printf("VERMEER ROOT: sample first8=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                head[0],head[1],head[2],head[3],head[4],head[5],head[6],head[7]);
+            hash_mismatch(root_failure_stage,entry.sha256,actual);return EIO;
+        }
+    }
+    printf("VERMEER ROOT: mapped RAM probes and physical addresses matched; full SHA still required\n");return 0;
 }
 static int receive_data(void *ctx,uint64_t offset,const void *data,size_t n)
 {
@@ -232,6 +291,7 @@ static int start_receiver(void)
         if (preloaded!=1 || SecureDTGetProperty(chosen,"vermeer-ram-preloaded",&blob,&size)!=kSuccess || size!=sizeof(value))return EINVAL;
         memcpy(&value,blob,sizeof(value));if (value!=1)return EINVAL;
         printf("VERMEER RAM: loader supplied compressed root; no XNU USB receiver required\n");
+        error=verify_sha_provider();if(error)return error;
     } else {
         struct vrx_ops ops={NULL,receive_begin,receive_data,receive_finish,receive_reply};
         vrx_init(&receive,&ops);
@@ -286,6 +346,7 @@ static int start_receiver(void)
         config.base,config.bytes);
     if (preloaded) {
         printf("VERMEER RAM: verifying preloaded full-root SHA256 before use\n");
+        error=verify_root_probes(chosen);if(error)return error;
         printf("VERMEER RAM: SHA256 init begin; scalar provider v2\n");
         SHA256_Init(&transfer_hash);
         printf("VERMEER RAM: SHA256 init complete; first read/hash next\n");

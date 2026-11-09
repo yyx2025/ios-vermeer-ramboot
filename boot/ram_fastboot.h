@@ -2,8 +2,19 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+int rfb_verify_stored_root(void);
+int rfb_verify_handoff_probes(void);
 #define RFB_CHUNK_MAX (64u*1024u*1024u)
-struct rfb_sha { uint32_t h[8];uint64_t bytes;uint8_t block[64];unsigned used; };
+struct rfb_sha { _Alignas(16) uint32_t h[8];uint64_t bytes;_Alignas(16) uint8_t block[64];unsigned used; };
+#ifdef VERMEER_RAM_SHA_ACCEL
+int rfb_sha_accel_begin(void);
+void rfb_sha_accel_end(void);
+int rfb_sha_hardware_active(void);
+void rfb_sha256_block_arm64(uint32_t h[8],const uint8_t block[64]);
+void rfb_sha256_blocks_arm64(uint32_t h[8],const uint8_t *,size_t blocks);
+#endif
+/* Aligned, nonoverlapping RAM only; zero blocks performs no access. */
+void rfb_copy64_arm64(void *,const void *,size_t blocks);
 void rfb_sha_init(struct rfb_sha *);
 void rfb_sha_update(struct rfb_sha *,const void *,size_t);
 void rfb_sha_final(struct rfb_sha *,uint8_t out[32]);

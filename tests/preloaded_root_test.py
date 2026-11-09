@@ -65,6 +65,8 @@ static struct vrx_state receive;
 static int flag=1,property=1,alloc_error,map_error,finish_error;
 static unsigned usb_calls,allocs,finishes,hash_starts;
 static uint64_t hashed,mapped,map_calls,fail_offset=UINT64_MAX;
+static int verify_sha_provider(void){return 0;}
+static int verify_root_probes(DTEntry chosen){assert(chosen==1 && mapped==STREAM_BYTES);return 0;}
 static int SecureDTLookupEntry(void *a,const char *b,DTEntry *d){
  assert(!a && !strcmp(b,"/chosen"));*d=1;return 0;
 }

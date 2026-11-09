@@ -9,6 +9,13 @@ static void hex(char *out,uint64_t value,unsigned digits)
 static uint32_t rotate(uint32_t v,unsigned n) { return (v>>n)|(v<<(32-n)); }
 static void sha_block(struct rfb_sha *s,const uint8_t *p)
 {
+#ifdef VERMEER_RAM_SHA_ACCEL
+    /* MMU-off DMA data and the aligned final block are naturally aligned.
+     * Preserve the scalar path for arbitrary unaligned API input. */
+    if(rfb_sha_hardware_active() && !((uintptr_t)p&15u)) {
+        rfb_sha256_block_arm64(s->h,p);return;
+    }
+#endif
     static const uint32_t k[64]={
       0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
       0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -41,6 +48,12 @@ void rfb_sha_update(struct rfb_sha *s,const void *data,size_t bytes)
 {
     const uint8_t *p=data;s->bytes+=bytes;
     while(bytes) {
+#ifdef VERMEER_RAM_SHA_ACCEL
+        if(!s->used && bytes>=64 && !((uintptr_t)p&15u) && rfb_sha_hardware_active()) {
+            size_t blocks=bytes/64,n=blocks*64;
+            rfb_sha256_blocks_arm64(s->h,p,blocks);p+=n;bytes-=n;continue;
+        }
+#endif
         if(!s->used && bytes>=64) {sha_block(s,p);p+=64;bytes-=64;continue;}
         unsigned n=(unsigned)(bytes<64-s->used?bytes:64-s->used);
         copy(s->block+s->used,p,n);s->used+=n;p+=n;bytes-=n;
@@ -76,6 +89,14 @@ int rfb_command(struct rfb_state *s,const uint8_t *p,unsigned n,char reply[65])
     if(equal(p,n,"getvar:max-download-size")) {text(reply,"OKAY0x04000000");return 0;}
     if(equal(p,n,"getvar:ram-received")) {text(reply,"OKAY");hex(reply+4,s->received,16);return 0;}
     if(equal(p,n,"getvar:ram-total")) {text(reply,"OKAY");hex(reply+4,s->total,16);return 0;}
+    if(equal(p,n,"getvar:ram-sha-mode")) {
+#ifdef VERMEER_RAM_SHA_ACCEL
+        text(reply,rfb_sha_hardware_active()?"OKAYarm64-sha2":"OKAYsoftware");
+#else
+        text(reply,"OKAYsoftware");
+#endif
+        return 0;
+    }
     if(equal(p,n,"getvar:ram-sha256-lo") || equal(p,n,"getvar:ram-sha256-hi")) {
         unsigned base=equal(p,n,"getvar:ram-sha256-lo")?0:16;
         text(reply,"OKAY");for(unsigned i=0;i<16;i++)hex(reply+4+2*i,s->expected[base+i],2);return 0;

@@ -21,6 +21,7 @@ import adt
 import mkpayload
 import mkvermeeradt
 import ram_stream_config
+import root_memory_probes
 
 
 def main():
@@ -32,6 +33,8 @@ def main():
     p.add_argument('--checkpoint',action='store_true')
     p.add_argument('--ram-stream',action='store_true',help='ramdisk positional argument is the verified packed-root JSON; root is received over USB before mount')
     p.add_argument('--ram-preload-fastboot',action='store_true',help='receive and verify the complete root in the shim before XNU; requires --ram-stream')
+    p.add_argument('--desktop-profile',action='store_true',help='desktop-test ADT defaults; requires the complete preloaded RAM root, never checkpoint mode')
+    p.add_argument('--ram-sha-accel',action='store_true',help='feature-gated ARM64 SHA256 instructions in preloader; retains complete SHA verification')
     p.add_argument('--ram-map-only',action='store_true',help='read bounded live FDT and return; no XNU jump')
     p.add_argument('--ram-read-only',action='store_true',help='after a live-FDT guard, sample 9 GiB using aligned reads only')
     p.add_argument('--ram-write-restore',action='store_true',help='test and restore 65536 sampled words in lower 8 GiB; no XNU or partition writes')
@@ -42,6 +45,10 @@ def main():
     a = p.parse_args()
     if a.ram_preload_fastboot and not a.ram_stream:
         raise ValueError('Pre-kernel Fastboot requires a complete packed-root record')
+    if a.desktop_profile and (a.checkpoint or not a.ram_preload_fastboot):
+        raise ValueError('Desktop profile requires the complete preloaded RAM root and Apple GUI kernel')
+    if a.ram_sha_accel and not a.ram_preload_fastboot:
+        raise ValueError('SHA acceleration requires the complete pre-kernel RAM Fastboot path')
     if a.ram_stream and any((a.checkpoint,a.ram_map_only,a.ram_read_only,a.ram_write_restore,a.usb_checkpoint,a.usb_map_only)):
         raise ValueError('Complete-root RAM streaming is separate from checkpoint diagnostics')
     packed_record=packed_file=stream_config=None
@@ -92,6 +99,14 @@ def main():
         chosen.props.append(('vermeer-ram-config',0,stream_config))
         if a.ram_preload_fastboot:
             chosen.props.append(('vermeer-ram-preloaded',0,struct.pack('<I',1)))
+            probes,probe_rows=root_memory_probes.make_probes(packed_file,packed_record['packed_bytes'],packed_record['packed_sha256'])
+            chosen.props.append(('vermeer-ram-probes',0,probes))
+    if a.desktop_profile:
+        defaults=next(child for child in tree.children if child.name=='defaults')
+        for key in ('vmm-present','sleep-disabled'):
+            if any(name==key for name,_,_ in defaults.props):
+                raise ValueError('Desktop default already present: '+key)
+            defaults.props.append((key,0,struct.pack('<I',1)))
     tree_path = out/'vermeer.adt'
     tree_path.write_bytes(adt.serialize(tree))
     args = 'debug=0xc serial=3 cpus=1 keepsyms=1 rd=md0'
@@ -116,6 +131,7 @@ def main():
         digest=bytes.fromhex(packed_record['packed_sha256'])
         (build/'ram_fastboot_config.h').write_text('#include <stdint.h>\n#define RFB_ROOT_BYTES UINT64_C('+str(packed_record['packed_bytes'])+')\nstatic const uint8_t rfb_root_sha[32]={'+','.join(str(x) for x in digest)+'};\n')
         shutil.copyfile(ROOT/'xnu/vermeer/vermeer_usb_protocol.h',build/'vermeer_usb_protocol.h')
+        (build/'ram_fastboot_probes.h').write_text(root_memory_probes.c_header(probe_rows),encoding='utf-8')
     (build/'out').mkdir(exist_ok=True)
     (build/'out/payload.bin').write_bytes(blob)
     clang = a.llvm/'clang.exe'
@@ -126,7 +142,8 @@ def main():
     env['PATH'] = str(a.llvm)+os.pathsep+env.get('PATH','')
     objects=[]
     sources=['entry.S','vectors.S','payload.S','main.c','console.c','loader.c','fdt.c','ram_map.c','usb_map.c']
-    if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c']
+    if a.ram_preload_fastboot:sources+=['ram_fastboot.c','ram_fastboot_usb.c','ram_copy_arm64.S','ram_root_verify.c']
+    if a.ram_sha_accel:sources+=['ram_sha_accel.c','ram_sha256_arm64.S']
     for source in sources:
         target = 'out/'+Path(source).stem+'.o'
         subprocess.run([str(clang),'--target=aarch64-none-elf','-O2','-ffreestanding','-nostdlib',
@@ -137,6 +154,7 @@ def main():
                         *(['-DVERMEER_USB_MAP_ONLY'] if a.usb_map_only else []),
                         *(['-DVERMEER_RAM_STREAM'] if a.ram_stream else []),
                         *(['-DVERMEER_RAM_FASTBOOT'] if a.ram_preload_fastboot else []),
+                        *(['-DVERMEER_RAM_SHA_ACCEL'] if a.ram_sha_accel else []),
                         '-c',source,'-o',target],cwd=build,env=env,check=True)
         objects.append(target)
     # entry.S intentionally stores _end as the ARM64 image-size field.
@@ -193,6 +211,19 @@ def main():
                       windows_com_port_required=False,bootstrap_usb_polling=False,
                       usb_start_before_network=True,root_receive_before_network=True,
                       measured_abl_max_download_bytes=805306368,ram_chunk_bytes=67108864)
+        report.update(stored_root_full_sha256_before_commit=True,root_probe_schema='VMRP0001',
+                      root_probe_count=len(probe_rows),root_probe_bytes=root_memory_probes.SAMPLE_BYTES,
+                      root_probes_after_kernel_copy=True)
+    if a.desktop_profile:
+        report.update(desktop_test_profile=True,
+                      adt_defaults={'vmm-present':1,'sleep-disabled':1},
+                      apple_desktop_hardware_verified=False)
+    if a.ram_sha_accel:
+        report.update(ram_sha_acceleration_requested=True,
+                      ram_full_sha256_verification_retained=True,
+                      cpu_crypto_feature_gate=True,cpu_cpacr_restored_before_handoff=True,
+                      data_cache_and_mmu_remain_disabled=True,
+                      ram_transfer_speed_hardware_verified=False)
     a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2))
 
