@@ -1,0 +1,15 @@
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -50,5 +50,12 @@
+ # This provider is built into SWEET; other boards use their normal kext.
+ ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)
++# Root checks run before the normal filesystem/worker startup.
++# Keep their portable C code on general registers like the SHA provider.
++vermeer_ram_stream.o_CFLAGS_ADD += -mgeneral-regs-only
++vermeer_packed_store.o_CFLAGS_ADD += -mgeneral-regs-only
++lzfse_decode_base.o_CFLAGS_ADD += -mgeneral-regs-only
++lzfse_fse.o_CFLAGS_ADD += -mgeneral-regs-only
++lzvn_decode_base.o_CFLAGS_ADD += -mgeneral-regs-only
+ SWEET_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/sweet_libpthread
+ SWEET_PTHREAD_INC = -I$(SWEET_PTHREAD_ROOT) -I$(SWEET_PTHREAD_ROOT)/private -I$(SWEET_PTHREAD_ROOT)/include
+ sweet_pthread_init.o_INCFLAGS = $(SWEET_PTHREAD_INC)

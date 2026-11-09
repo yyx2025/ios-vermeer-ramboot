@@ -22,7 +22,8 @@ assert stream.index('vermeer_usb_debug_start();',setup)<stream.index('kmem_alloc
 assert stream.index('pump_wait(0,240)',setup)<stream.index('pmap_enter_options(kernel_pmap,area+page',setup)
 assert stream.index('receive_prepared=1;',setup)<stream.index('pump_wait(1,600)',setup)<stream.index('pump_wait(2,30)',setup)<stream.index('vermeer_usb_ram_handoff()',setup)
 assert 'tsleep(' not in stream and 'thread_block(' not in stream
-assert 'preloaded root setup failed: %d; storage untouched' in bsd
+assert 'preloaded root setup failed: %d stage=%s; storage untouched' in bsd
+assert 'early_usb_error, vermeer_ram_root_failure_stage()' in bsd
 assert 'if (!preloaded && vermeer_usb_ram_step()<0)' in stream
 assert 'vermeer-ram-preloaded' in stream
 preload=stream.index('if (preloaded) {',stream.index('pmap_enter_options(kernel_pmap,area+page',setup))
@@ -45,3 +46,10 @@ assert 'sweet_sha2small.o_CFLAGS_ADD += -mgeneral-regs-only' in (tree/'libkern/c
 assert 'SHA256 init complete; first read/hash next' in stream
 assert 'SHA256 verified %llu/%llu bytes' in stream
 print('SWEET SHA256 scalar provider, context bound and preloaded-root progress: PASS')
+assert 'complete file SHA256 matched; root-check v3' in stream
+assert 'full-sha256-mismatch' in stream and 'index-sha256-mismatch' in stream
+assert 'open failed vrs=%d; stage=%s' in stream
+assert 'HFS read failed vrs=%d; stage=%s' in stream
+for name in ('vermeer_ram_stream','vermeer_packed_store','lzfse_decode_base','lzfse_fse','lzvn_decode_base'):
+    assert name+'.o_CFLAGS_ADD += -mgeneral-regs-only' in (tree/'bsd/conf/Makefile.template').read_text()
+print('Independent full SHA/index/decode/HFS failure stages and scalar verifier objects: PASS')

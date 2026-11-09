@@ -45,6 +45,10 @@ static int sleep_channel;
 /* Called only by the BSD bootstrap thread. Never restart an owned DMA path. */
 static int start_attempted,start_error;
 static int receive_prepared;
+static const char *root_failure_stage="config-or-aperture";
+static int decode_status,decode_complete,decode_failed;
+static size_t decode_written,decode_consumed;
+const char *vermeer_ram_root_failure_stage(void) { return root_failure_stage; }
 LCK_GRP_DECLARE(stream_group,"vermeer-ram-root");
 LCK_MTX_DECLARE(stream_lock,&stream_group);
 extern dev_t mdevadd(int,uint64_t,unsigned int,int);
@@ -66,11 +70,30 @@ int vermeer_packed_active(int);
 int vermeer_packed_buf(struct buf *,uint64_t,void *);
 int vermeer_packed_uio(struct uio *);
 
+static void hash_hex(const uint8_t *hash,char *text)
+{
+    static const char digits[]="0123456789abcdef";
+    for (unsigned i=0;i<32;i++) {
+        text[2*i]=digits[hash[i]>>4];text[2*i+1]=digits[hash[i]&15];
+    }
+    text[64]=0;
+}
+static void hash_mismatch(const char *stage,const uint8_t *expected,const uint8_t *actual)
+{
+    char want[65],got[65];hash_hex(expected,want);hash_hex(actual,got);
+    printf("VERMEER ROOT: %s expected=%s\n",stage,want);
+    printf("VERMEER ROOT: %s actual=%s\n",stage,got);
+}
 static int index_sha(void *ctx,const void *data,size_t n,const uint8_t *expected)
 {
     (void)ctx;SHA256_CTX hash;uint8_t value[32];
     SHA256_Init(&hash);SHA256_Update(&hash,data,n);SHA256_Final(value,&hash);
-    return !memcmp(value,expected,sizeof(value));
+    if (memcmp(value,expected,sizeof(value))) {
+        root_failure_stage="index-sha256-mismatch";
+        hash_mismatch(root_failure_stage,expected,value);return 0;
+    }
+    printf("VERMEER ROOT: index SHA256 matched; %lu bytes\n",(unsigned long)n);
+    return 1;
 }
 static int decode_block(void *ctx,void *dst,size_t n,const void *src,size_t stored)
 {
@@ -78,8 +101,19 @@ static int decode_block(void *ctx,void *dst,size_t n,const void *src,size_t stor
     decoder.src=decoder.src_begin=src;decoder.src_end=decoder.src+stored;
     decoder.dst=decoder.dst_begin=dst;decoder.dst_end=decoder.dst+n;
     int result=lzfse_decode(&decoder);
-    return result==LZFSE_STATUS_OK && decoder.end_of_stream &&
-        (size_t)(decoder.dst-decoder.dst_begin)==n && decoder.src==decoder.src_end;
+    decode_status=result;decode_complete=decoder.end_of_stream;
+    decode_written=(size_t)(decoder.dst-decoder.dst_begin);
+    decode_consumed=(size_t)(decoder.src-decoder.src_begin);
+    int ok=result==LZFSE_STATUS_OK && decoder.end_of_stream &&
+        decode_written==n && decoder.src==decoder.src_end;
+    if (!ok) {
+        decode_failed=1;
+        root_failure_stage="block-decode";
+        printf("VERMEER ROOT: decode failed status=%d eos=%d output=%lu/%lu input=%lu/%lu\n",
+            result,decode_complete,(unsigned long)decode_written,(unsigned long)n,
+            (unsigned long)decode_consumed,(unsigned long)stored);
+    }
+    return ok;
 }
 static int receive_begin(void *ctx,uint64_t bytes,const uint8_t *sha)
 {
@@ -100,13 +134,38 @@ static int receive_data(void *ctx,uint64_t offset,const void *data,size_t n)
 static int receive_finish(void *ctx)
 {
     (void)ctx;uint8_t hash[32],hfs[512];
+    root_failure_stage="full-sha256-final";
     SHA256_Final(hash,&transfer_hash);
-    if (memcmp(hash,config.sha256,32)) return EIO;
+    if (memcmp(hash,config.sha256,32)) {
+        root_failure_stage="full-sha256-mismatch";
+        hash_mismatch(root_failure_stage,config.sha256,hash);return EIO;
+    }
+    printf("VERMEER ROOT: complete file SHA256 matched; root-check v3\n");
     uint64_t overlay_off=(config.packed_bytes+PAGE_MASK)&~(uint64_t)PAGE_MASK;
+    root_failure_stage="packed-open";
+    printf("VERMEER ROOT: opening packed index; packed=%llu overlay-offset=%llx\n",
+        config.packed_bytes,overlay_off);
     int error=vrs_open(&store,(void *)area,(size_t)config.packed_bytes,(void *)cache,
         (uint32_t *)page_index,VRS_MAX_LOGICAL/VRS_PAGE,(void *)(area+overlay_off),
         (uint32_t)(config.overlay_bytes/VRS_PAGE),index_sha,decode_block,NULL);
-    if (error || vrs_read(&store,1024,hfs,sizeof(hfs))) return EIO;
+    if (error) {
+        printf("VERMEER ROOT: open failed vrs=%d; stage=%s\n",error,root_failure_stage);
+        return EIO;
+    }
+    printf("VERMEER ROOT: packed index opened; logical=%llu blocks=%u\n",store.logical_bytes,store.blocks);
+    root_failure_stage="hfs-block-read";decode_status=0;decode_complete=0;decode_failed=0;
+    decode_written=decode_consumed=0;
+    error=vrs_read(&store,1024,hfs,sizeof(hfs));
+    if (error) {
+        if (error==VRS_CORRUPT && !decode_failed) root_failure_stage="hfs-block-crc";
+        printf("VERMEER ROOT: HFS read failed vrs=%d; stage=%s decode=%d eos=%d output=%lu input=%lu\n",
+            error,root_failure_stage,decode_status,decode_complete,
+            (unsigned long)decode_written,(unsigned long)decode_consumed);
+        return EIO;
+    }
+    printf("VERMEER ROOT: HFS header read; signature=%02x%02x attributes=%02x%02x%02x%02x\n",
+        hfs[0],hfs[1],hfs[4],hfs[5],hfs[6],hfs[7]);
+    root_failure_stage="hfs-header-policy";
     if ((hfs[0]!='H' || (hfs[1]!='X' && hfs[1]!='+')) || !(hfs[6]&0x20) ||
         (store.logical_bytes&4095) || (store.logical_bytes>>12)>UINT32_MAX) return EINVAL;
     printf("VERMEER RAM: complete packed SHA256/index/HFS header verified; logical %llu; overlay %llu\n",
@@ -233,10 +292,10 @@ static int start_receiver(void)
         for (uint64_t off=0;off<config.packed_bytes;) {
             uint64_t left=config.packed_bytes-off;
             size_t n=(size_t)(left>VRS_BLOCK?VRS_BLOCK:left);
-            if (!(off&UINT64_C(0xffffff)))
+            if (!(off&UINT64_C(0x3ffffff)))
                 printf("VERMEER RAM: SHA256 reading offset=%llx bytes=%lu\n",off,(unsigned long)n);
             SHA256_Update(&transfer_hash,(const void *)(area+off),n);off+=n;
-            if (off==VRS_BLOCK || !(off&UINT64_C(0xffffff)) || off==config.packed_bytes)
+            if (off==VRS_BLOCK || !(off&UINT64_C(0x3ffffff)) || off==config.packed_bytes)
                 printf("VERMEER RAM: SHA256 verified %llu/%llu bytes\n",off,config.packed_bytes);
         }
         printf("VERMEER RAM: SHA256 final/index/HFS verification begin\n");

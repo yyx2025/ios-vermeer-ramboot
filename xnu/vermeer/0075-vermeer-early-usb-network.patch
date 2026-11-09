@@ -1,6 +1,6 @@
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -747,6 +747,21 @@
+@@ -747,6 +747,22 @@
  	bsd_init_kprintf("calling psem_cache_init\n");
  	psem_cache_init();
  
@@ -10,11 +10,12 @@
 +	 * Root registration/mount remains after normal network init. */
 +	extern int vermeer_ram_stream_start(void);
 +	extern const char *vermeer_usb_failure_reason(void);
++	extern const char *vermeer_ram_root_failure_stage(void);
 +	int early_usb_error = vermeer_ram_stream_start();
 +	if (early_usb_error) {
 +		int preloaded = 0;
 +		PE_parse_boot_argn("vermeer_ram_preloaded", &preloaded, sizeof(preloaded));
-+		if (preloaded) panic("VERMEER RAM: preloaded root setup failed: %d; storage untouched", early_usb_error);
++		if (preloaded) panic("VERMEER RAM: preloaded root setup failed: %d stage=%s; storage untouched", early_usb_error, vermeer_ram_root_failure_stage());
 +		panic("VERMEER RAM: early USB receive setup failed: %d; USB: %s; storage untouched", early_usb_error, vermeer_usb_failure_reason());
 +	}
 +#endif
