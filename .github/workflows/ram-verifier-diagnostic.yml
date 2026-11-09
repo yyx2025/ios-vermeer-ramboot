@@ -1,0 +1,43 @@
+name: RAM verifier diagnostic on existing build
+on:
+  push:
+    branches: [xnu-root-read-consistency-20261109-v5]
+    paths:
+      - tests/root_memory_window_test.py
+      - .github/workflows/ram-verifier-diagnostic.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-buildtree
+          path: prior-buildtree
+          run-id: 42576482312
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          path: prior-kernel
+          run-id: 42576482312
+          github-token: ${{ github.token }}
+      - name: Extract prior compiled source and run unchanged verifier
+        run: |
+          mkdir prior-tree
+          tar xzf prior-buildtree/buildtree.tgz -C prior-tree
+          cmp xnu/vermeer/vermeer_ram_stream.c prior-tree/xnu/bsd/dev/vermeer_ram_stream.c
+          python3 tests/root_memory_window_test.py --tree prior-tree/xnu
+      - name: Verify linked kernel code
+        run: |
+          (cd prior-kernel && shasum -a 256 -c SHA256SUMS)
+          python3 tools/check_scalar_sha256.py prior-kernel/kernel.development.sweet
+          python3 tools/check_scalar_sha256.py prior-kernel/kernel.development.sweet --root-verifier
+          python3 tools/check_ios_kernel.py prior-kernel/kernel.development.sweet --gui --ram-only --ram-stream --ram-preload

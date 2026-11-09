@@ -49,12 +49,20 @@ structs=source[source.index('struct root_probe_header {'):source.index('static i
 checks=r'''
 static int check(void){SHA256_Init(&transfer_hash);return verify_root_windows(1);}
 int main(void){
+ setbuf(stdout,NULL);
  FILE *f=fopen(ROOT_FILE,"rb");assert(f);
  uint8_t *data=malloc(ROOT_BYTES);assert(data && fread(data,1,ROOT_BYTES,f)==ROOT_BYTES);fclose(f);area=(uintptr_t)data;
  uint8_t scratch[VRS_BLOCK+32];memset(scratch,0xa5,sizeof(scratch));cache=(uintptr_t)(scratch+16);
  config.packed_bytes=ROOT_BYTES;memcpy(config.sha256,EXPECTED,32);
  f=fopen(WINDOW_FILE,"rb");assert(f);blob_size=(unsigned)fread(blob_data,1,sizeof(blob_data),f);fclose(f);
- assert(!check());uint8_t actual[32];SHA256_Final(actual,&transfer_hash);assert(!memcmp(actual,EXPECTED,32));
+ int first=check();
+ if(first){
+  struct root_probe_header initial;memcpy(&initial,blob_data,sizeof(initial));
+  fprintf(stderr,"Initial window verification returned %d stage=%s; blob=%u header=%lu entry=%lu magic=%.8s count=%u entry-bytes=%u packed=%llu config=%llu window=%llu sha-match=%d cache-set=%d\n",
+   first,root_failure_stage,blob_size,(unsigned long)sizeof(initial),(unsigned long)sizeof(struct root_probe_entry),initial.magic,initial.count,initial.entry_bytes,
+   (unsigned long long)initial.packed_bytes,(unsigned long long)config.packed_bytes,(unsigned long long)VMRW_WINDOW_BYTES,!memcmp(initial.sha256,config.sha256,32),cache!=0);
+ }
+ assert(!first);uint8_t actual[32];SHA256_Final(actual,&transfer_hash);assert(!memcmp(actual,EXPECTED,32));
  /* Changes between the old sparse witnesses are covered, including the tail. */
  const size_t offsets[]={32768,70000,ROOT_BYTES-1};
  for(unsigned i=0;i<3;i++){data[offsets[i]]^=1;assert(check()==EIO && !strcmp(root_failure_stage,"mapped-root-window-mismatch"));data[offsets[i]]^=1;}
