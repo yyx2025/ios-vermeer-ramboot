@@ -25,7 +25,7 @@ if '--gui' in sys.argv:
                  b'VERMEER FB: retained pending frame ownership enabled',
                  b'VERMEER FRAME: submits=', b'VERMEER INPUT: touch-calls=',
                  b'VERMEER TOUCH: physical GT9916 input ready',
-                 b'vermeer_touch', b'VERMEER TOUCH: IC-info guard refused',
+                 b'vermeer_touch', b'IC-info guard refused',
                  b'VERMEER TOUCH: clock-snapshot', b'VERMEER TOUCH: spi-snapshot',
                  b'VERMEER HID: atomic physical frames and canvas-edge origin v2',
                  b'VERMEER FB: logical canvas 1125x2436 scaled to full panel 1440x3200',

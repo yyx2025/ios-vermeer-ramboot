@@ -1,0 +1,52 @@
+name: Verify K70 display touch against compiled v7
+on:
+  push:
+    branches: [xnu-display-touch-20261109-v7]
+    paths:
+      - tools/check_ios_kernel.py
+      - .github/workflows/display-touch-verifier.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-buildtree
+          path: prior-buildtree
+          run-id: 42641649120
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          path: prior-kernel
+          run-id: 42641649120
+          github-token: ${{ github.token }}
+      - name: Verify unchanged compiled touch sources
+        run: |
+          mkdir prior-tree
+          tar xzf prior-buildtree/buildtree.tgz -C prior-tree
+          for file in vermeer_touch.c vermeer_touch_frame.h vermeer_touch_thp.h vermeer_goodix_info.h vermeer_goodix_packet.h k70_rpmh.h SmmuBypass.h qcom-geni-spi/GeniSpi.c qcom-geni-spi/GeniSpi.h vermeer_ram_stream.c; do
+            cmp "xnu/vermeer/$file" "prior-tree/xnu/bsd/dev/$file"
+          done
+          cmp xnu/vermeer/vermeer_frame_scale.h prior-tree/xnu/iokit/Kernel/arm/vermeer_frame_scale.h
+          grep -F 'vframe_scale_plan(&plan' prior-tree/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+          grep -F 'scaled to full panel 1440x3200' prior-tree/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+      - name: Run all actual kernel post-build checks
+        run: |
+          python3 tools/check_ram_startup.py prior-tree/xnu
+          python3 tests/scalar_sha256_test.py --tree prior-tree/xnu
+          python3 tests/root_finish_test.py --tree prior-tree/xnu
+          python3 tests/root_memory_probe_test.py --tree prior-tree/xnu
+          python3 tests/root_memory_window_test.py --tree prior-tree/xnu
+          (cd prior-kernel && shasum -a 256 -c SHA256SUMS)
+          python3 tools/check_scalar_sha256.py prior-kernel/kernel.development.sweet
+          python3 tools/check_scalar_sha256.py prior-kernel/kernel.development.sweet --root-verifier
+          python3 tools/check_ios_kernel.py prior-kernel/kernel.development.sweet --gui --ram-only --ram-stream --ram-preload
