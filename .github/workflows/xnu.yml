@@ -133,6 +133,26 @@ jobs:
           python3 tools/restore_legacy_iig.py .legacy-iig
           echo "IIG=$PWD/.legacy-iig/iig" >> "$GITHUB_ENV"
 
+      - name: Install verified XNU-8796 developer kit
+        run: |
+          kit="$RUNNER_TEMP/KDK_13.5_22G74.dmg"
+          mount="$RUNNER_TEMP/verified-kdk-mount"
+          expected=29866842eef039812888daea4176ce493be153b0d6d1b88f90753d69ea51b7d4
+          mkdir -p "$mount"
+          for attempt in 1 2 3; do
+            curl --fail --show-error --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 900 \
+              --output "$kit" "https://github.com/dortania/KdkSupportPkg/releases/download/22G74/Kernel_Debug_Kit_13.5_build_22G74.dmg?run=$GITHUB_RUN_ID&attempt=$attempt"
+            if [ "$(stat -f %z "$kit")" = 658949979 ] && printf '%s  %s\n' "$expected" "$kit" | shasum -a 256 -c -; then
+              break
+            fi
+          done
+          test "$(stat -f %z "$kit")" = 658949979
+          printf '%s  %s\n' "$expected" "$kit" | shasum -a 256 -c -
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$kit"
+          sudo installer -pkg "$mount/KernelDebugKit.pkg" -target /
+          hdiutil detach "$mount"
+          test -d /Library/Developer/KDKs/KDK_13.5_22G74.kdk
+
       - name: Build
         working-directory: dxb
         env:
