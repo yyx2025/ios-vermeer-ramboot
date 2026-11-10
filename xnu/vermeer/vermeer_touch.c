@@ -49,8 +49,9 @@ static struct {
     uint32_t vote_added,pins[4];
     bool pins_saved,root_forced,engine_touched;
     struct geni_spi spi;
-    int last_err,smmu_slot;
-    unsigned stage_detail,confirmed,nonzero,status_or,resets,cmd_ack,polls,frame_ready,frame_flag;
+    int _Atomic last_err,smmu_slot;
+    unsigned _Atomic stage_detail,confirmed,cmd_ack;
+    unsigned nonzero,status_or,resets,polls,frame_ready,frame_flag;
     uint32_t fw_state,raw[2];
     uint32_t _Atomic event_header;
     unsigned level,div;
@@ -204,7 +205,7 @@ static int vt_clock_enable(void)
            (cmd&0x80000000u) && !(cmd&3u)) {
             touch.root_forced=true;vt_wr(touch.gcc,VT_RCG,cmd|2u);
         }
-        delay(10);
+        vt_sleep(10);
     }
     vt_reason("SE4/AHB clock vote not ready");return 0;
 }
@@ -347,7 +348,7 @@ static int vt_identify(void)
  * screen's long axis, bit1 mirror x, bit2 mirror y). */
 static struct vtt_work vt_thp;
 static uint8_t vt_fbuf[4096];
-static struct { unsigned thr,map,frames,peaks,mode_ok; int max,max_t,max_r; } thp;
+static struct { unsigned thr,map; unsigned _Atomic frames,peaks,mode_ok,polls; int _Atomic max,max_t,max_r; } thp;
 static int vt_thp_start(void)
 {
     unsigned t=touch.info.tx,r=touch.info.rx;
@@ -372,13 +373,17 @@ static int vt_thp_frame(void)
     if(!vt_spi_read(touch.info.frame,vt_fbuf,off+nodes*2))return -1;
     if(!vt_spi_write(touch.info.frame,&zero,1))return -1;
     if(!vtt_decode(&vt_thp,vt_fbuf,off+nodes*2,touch.info.tx,touch.info.rx,touch.info.frame_skip))return -1;
-    thp.frames++;
+    os_atomic_inc(&thp.frames,relaxed);
     return 1;
 }
 static int vt_thp_process(void)
 {
     struct vt_frame frame={0};
     if(!vtt_process(&vt_thp,touch.info.tx,touch.info.rx,thp.thr,thp.map,&touch.contacts,&frame))return 0;
+    os_atomic_store(&thp.peaks,vt_thp.peaks,relaxed);
+    os_atomic_store(&thp.max,vt_thp.max,relaxed);
+    os_atomic_store(&thp.max_t,vt_thp.max_t,relaxed);
+    os_atomic_store(&thp.max_r,vt_thp.max_r,relaxed);
     if(!vt_emit_frame(&frame))return 0;
     os_atomic_inc(&touch.reports,relaxed);return 1;
 }
@@ -394,13 +399,15 @@ static void vt_thread(void *arg,wait_result_t result)
     if(!vt_engine_setup())goto stopped;
     os_atomic_store(&touch.stage,VT_IDENTITY,relaxed);
     if(!vt_identify())goto stopped;
-    os_atomic_store(&touch.stage,VT_READY,relaxed);
-    vt_reason("GT9916 ready");
+    vt_reason("GT9916 identified");
     if(!vt_thp_start()){vt_reason("THP mode/geometry refused");goto stopped;}
+    os_atomic_store(&touch.stage,VT_READY,relaxed);
+    vt_status();
     printf("VERMEER TOUCH: physical GT9916 input ready (SE DMA, RPMh, THP, atomic HID)\n");
     for(;;) {
+        os_atomic_inc(&thp.polls,relaxed);
         int r=vt_thp_frame();
-        if(r<0){vt_reason("SPI frame read failed");goto stopped;}
+        if(r<0){os_atomic_inc(&touch.bad,relaxed);vt_reason("SPI frame read failed");goto stopped;}
         if(!r){vt_sleep(4);continue;}
         if(!vt_thp_process()){vt_reason("HID frame dispatch failed");goto stopped;}
         vt_sleep(4);
@@ -408,7 +415,7 @@ static void vt_thread(void *arg,wait_result_t result)
 stopped:
     { struct vt_frame empty={0};
       if(!vt_emit_frame(&empty))vt_reason("HID release pending at stop"); }
-    vt_restore();os_atomic_store(&touch.stage,VT_STOPPED,relaxed);
+    vt_restore();os_atomic_store(&touch.stage,VT_STOPPED,relaxed);vt_status();
     thread_terminate(current_thread());
 }
 void vermeer_touch_start(void)
@@ -420,6 +427,7 @@ void vermeer_touch_start(void)
        size!=sizeof("Redmi K70") || memcmp(value,"Redmi K70",size)) {
         printf("VERMEER TOUCH: physical-model guard refused\n");return;
     }
+    printf("VERMEER TOUCH: iOS16 desktop v8 clock-wait=10000ms diagnostics=2\n");
     os_atomic_store(&touch.stage,VT_WAIT,relaxed);vermeer_debug_input_register(vt_status);
     thread_t thread=THREAD_NULL;
     kern_return_t result=kernel_thread_start(vt_thread,NULL,&thread);
@@ -432,11 +440,26 @@ static void vt_status(void)
         os_atomic_load(&touch.stage,relaxed),os_atomic_load(&touch.reports,relaxed),
         os_atomic_load(&touch.bad,relaxed),os_atomic_load(&touch.transactions,relaxed),
         os_atomic_load(&touch.emitted,relaxed),os_atomic_load(&touch.hid_retries,relaxed));
-    printf("VERMEER TOUCH: clock-snapshot vote=%08x core=%08x se4=%08x\n",
-        os_atomic_load(&touch.clock_vote,relaxed),os_atomic_load(&touch.clock_core,relaxed),
-        os_atomic_load(&touch.clock_se,relaxed));
-    printf("VERMEER TOUCH: spi-snapshot protocol=%u interface=%08x reset=%u irq=%u\n",
+    printf("VERMEER TOUCH: clock-snapshot vote=%08x core2x=%08x core=%08x master=%08x slave=%08x se4=%08x\n",
+        os_atomic_load(&touch.clock_vote,relaxed),os_atomic_load(&touch.clock_core2x,relaxed),
+        os_atomic_load(&touch.clock_core,relaxed),os_atomic_load(&touch.clock_master,relaxed),
+        os_atomic_load(&touch.clock_slave,relaxed),os_atomic_load(&touch.clock_se,relaxed));
+    printf("VERMEER TOUCH: clock-root=%08x cfg=%08x dfs=%08x\n",
+        os_atomic_load(&touch.clock_root,relaxed),os_atomic_load(&touch.clock_cfg,relaxed),
+        os_atomic_load(&touch.clock_dfs,relaxed));
+    printf("VERMEER TOUCH: spi-snapshot protocol=%u interface=%08x reset=%u irq=%u detail=%u error=%d smmu=%d confirm=%u ack=%02x\n",
         os_atomic_load(&touch.engine_proto,relaxed),os_atomic_load(&touch.interface,relaxed),
-        os_atomic_load(&touch.reset_level,relaxed),os_atomic_load(&touch.irq_level,relaxed));
+        os_atomic_load(&touch.reset_level,relaxed),os_atomic_load(&touch.irq_level,relaxed),
+        os_atomic_load(&touch.stage_detail,relaxed),os_atomic_load(&touch.last_err,relaxed),
+        os_atomic_load(&touch.smmu_slot,relaxed),os_atomic_load(&touch.confirmed,relaxed),
+        os_atomic_load(&touch.cmd_ack,relaxed));
+    char reason[sizeof(touch.reason)];
+    for(unsigned i=0;i<sizeof(reason);i++)reason[i]=os_atomic_load(&touch.reason[i],relaxed);
+    reason[sizeof(reason)-1]=0;
+    printf("VERMEER TOUCH: thp-polls=%u frames=%u mode=%u peaks=%u max=%d at=%d,%d reason=%s\n",
+        os_atomic_load(&thp.polls,relaxed),os_atomic_load(&thp.frames,relaxed),
+        os_atomic_load(&thp.mode_ok,relaxed),os_atomic_load(&thp.peaks,relaxed),
+        os_atomic_load(&thp.max,relaxed),os_atomic_load(&thp.max_t,relaxed),
+        os_atomic_load(&thp.max_r,relaxed),reason);
 }
 #endif

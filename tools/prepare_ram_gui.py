@@ -76,6 +76,7 @@ def prepare(destination):
     (destination/'0076-vermeer-scalar-sha256.patch').write_text((ROOT/'xnu/vermeer/0076-vermeer-scalar-sha256.patch').read_text())
     (destination/'0077-vermeer-root-verifier-scalar.patch').write_text((ROOT/'xnu/vermeer/0077-vermeer-root-verifier-scalar.patch').read_text())
     (destination/'0078-vermeer-fullscreen.patch').write_text((ROOT/'xnu/vermeer/0078-vermeer-fullscreen.patch').read_text())
+    (destination/'0079-vermeer-logical-default.patch').write_text((ROOT/'xnu/vermeer/0079-vermeer-logical-default.patch').read_text())
     added = '\n'.join(p.read_text(errors='surrogateescape') for p in destination.glob('*.patch'))
     for forbidden in ('+++ b/bsd/dev/sweet_ufs.c', '+++ b/bsd/dev/vermeer_ufs',
                       'SWEETLOG', 'vermeer_ufs_ios_rootdev', 'SCSI_WRITE', 'ufshcd_queuecommand'):

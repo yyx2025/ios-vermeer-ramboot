@@ -1,0 +1,129 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -96,6 +96,8 @@
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
++	SweetSurface *fCanvas;          /* logical default surface, always scaled */
++	uint32_t      fScaleX[1440], fScaleRow[1440]; /* work-loop-owned heap scratch */
+ 	IOLock       *fLock;            /* swaps and client list */
+ 	OSArray      *fClients;
+ 	uint32_t      fSwapID;
+@@ -142,6 +144,7 @@
+ {
+     IOLog("VERMEER FRAME: submits=%llu presents=%llu ticks=%llu backend=cpu-copy gpu=unavailable\n",
+         os_atomic_load(&vf_submitted,relaxed),os_atomic_load(&vf_presented,relaxed),os_atomic_load(&vf_ticks,relaxed));
++    IOLog("VERMEER FRAME: default=logical1125x2436 panel=1440x3200 full-panel-v8\n");
+     IOLog("VERMEER FRAME: copied-bytes=%llu missing=%llu rejected=%llu\n",
+         os_atomic_load(&vf_bytes,relaxed),os_atomic_load(&vf_missing,relaxed),os_atomic_load(&vf_rejected,relaxed));
+ }
+@@ -185,9 +188,12 @@
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
++	fCanvas = sweet_surface_create_buffer(VERMEER_LOGICAL_W, VERMEER_LOGICAL_H,
++	    (VERMEER_LOGICAL_W * 4 + 63) & ~63u, SWEET_FB_FORMAT_BGRA);
+ 	fWorkLoop = IOWorkLoop::workLoop();
+-	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
++	if (fLock == NULL || fClients == NULL || fPixels == 0 || fCanvas == NULL || fWorkLoop == NULL) {
+ 		IOLog("SWEET FB: setup failed\n");
++		OSSafeReleaseNULL(fCanvas);
+ 		OSSafeReleaseNULL(fSurface);    /* stays published: also held by the table */
+ 		OSSafeReleaseNULL(fWorkLoop);
+ 		return false;
+@@ -207,6 +213,7 @@
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
+ 	registerService();
+ 	vermeer_debug_frame_register(vermeer_frame_status);
++	IOLog("VERMEER FB: logical default surface %u 1125x2436; physical scanout separate v8\n", fCanvas->id);
+ 	IOLog("VERMEER FB: retained pending frame ownership enabled\n");
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id);
+@@ -362,16 +369,19 @@
+                 fWidth,fHeight,fRowBytes,(uint64_t)fRowBytes*fHeight)) {
+             os_atomic_inc(&vf_rejected,relaxed);continue;
+         }
+-        /* Compute X once per layer; integer division is absent from pixel loops. */
+-        uint32_t xmap[1440];
+-        for (uint32_t x=plan.x0;x<plan.x1;x++) xmap[x]=vframe_scale_x(&plan,x);
++        /* Expand in cached memory, then copy a row to the panel. The work loop
++         * owns scratch arrays; no large kernel-stack buffer or per-frame allocation. */
++        for (uint32_t x=plan.x0;x<plan.x1;x++) fScaleX[x]=vframe_scale_x(&plan,x);
++        uint32_t previous=UINT32_MAX;
+         for (uint32_t y=plan.y0;y<plan.y1;y++) {
+-            const uint8_t *row=(const uint8_t *)(src+plan.src+
+-                (uint64_t)vframe_scale_y(&plan,y)*s->bytesPerRow);
+-            volatile uint32_t *dst=(volatile uint32_t *)(fPixels+(uint64_t)y*fRowBytes);
+-            for (uint32_t x=plan.x0;x<plan.x1;x++) {
+-                uint32_t pixel;memcpy(&pixel,row+(uint64_t)xmap[x]*4,4);dst[x]=pixel;
++            uint32_t source_y=vframe_scale_y(&plan,y);
++            if(source_y!=previous) {
++                const uint8_t *row=(const uint8_t *)(src+plan.src+(uint64_t)source_y*s->bytesPerRow);
++                for(uint32_t x=plan.x0;x<plan.x1;x++)memcpy(&fScaleRow[x],row+(uint64_t)fScaleX[x]*4,4);
++                previous=source_y;
+             }
++            memcpy((void *)(fPixels+(uint64_t)y*fRowBytes+(uint64_t)plan.x0*4),
++                &fScaleRow[plan.x0],(size_t)(plan.x1-plan.x0)*4);
+         }
+         os_atomic_add(&vf_bytes,(uint64_t)(plan.x1-plan.x0)*(plan.y1-plan.y0)*4,relaxed);
+ 	}
+@@ -458,7 +468,7 @@
+ 
+ 	switch (selector) {
+ 	case kSweetFBGetLayerDefaultSurface:
+-		out[0] = sweet_surface_port_in_task(fFB->fSurface, fTask);
++		out[0] = sweet_surface_port_in_task(fFB->fCanvas, fTask);
+ 		outCount = 1;
+ 		break;
+ 	case kSweetFBSwapBegin:
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -246,6 +246,35 @@
+ 		return NULL;
+ 	}
+ 	return s;
++}
++
++SweetSurface *
++sweet_surface_create_buffer(uint32_t width, uint32_t height,
++    uint32_t bytesPerRow, uint32_t pixelFormat)
++{
++    const uint64_t bytes=(uint64_t)bytesPerRow*height;
++    if(!width || !height || width>SWEET_SURFACE_MAX_DIM || height>SWEET_SURFACE_MAX_DIM ||
++        (uint64_t)width*4>bytesPerRow || (bytesPerRow&63u) ||
++        !bytes || bytes>SWEET_SURFACE_MAX_ALLOC)return NULL;
++    SweetSurface *s=sweet_surface_alloc();
++    if(!s)return NULL;
++    s->width=width;s->height=height;s->bytesPerRow=bytesPerRow;
++    s->bytesPerElement=4;s->elementWidth=s->elementHeight=1;s->pixelFormat=pixelFormat;
++    s->allocSize=(uint32_t)round_page(bytes);
++    IOBufferMemoryDescriptor *mem=NULL;
++    if((uint64_t)OSAddAtomic64(s->allocSize,(volatile SInt64 *)&sweet_surface_wired)+
++        s->allocSize<=SWEET_SURFACE_WIRED_MAX) {
++        mem=IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++            kIODirectionInOut|kIOMemoryKernelUserShared,s->allocSize,page_size);
++    }
++    if(!mem) {
++        OSAddAtomic64(-(SInt64)s->allocSize,(volatile SInt64 *)&sweet_surface_wired);
++        s->release();return NULL;
++    }
++    bzero(mem->getBytesNoCopy(),s->allocSize);
++    s->memory=mem;s->mapCache=kIOMapDefaultCache;
++    if(!sweet_surface_publish(s)){s->release();return NULL;}
++    return s;
+ }
+ 
+ mach_port_name_t
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -58,6 +58,10 @@
+ SweetSurface *sweet_surface_create_physical(uint64_t phys, uint32_t width,
+     uint32_t height, uint32_t bytesPerRow, uint32_t pixelFormat);
+ 
++/* Retained, published, CPU-backed surface with bounded BGRA geometry. */
++SweetSurface *sweet_surface_create_buffer(uint32_t width, uint32_t height,
++    uint32_t bytesPerRow, uint32_t pixelFormat);
++
+ /* Send right for the surface in task (IOSurfaceLookupFromMachPort). */
+ mach_port_name_t sweet_surface_port_in_task(SweetSurface *surface, task_t task);
+ 
