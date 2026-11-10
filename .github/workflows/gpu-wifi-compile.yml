@@ -1,0 +1,41 @@
+name: Compile K70 iOS16 GPU memory port
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compile:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-buildtree
+          path: prior-buildtree
+          run-id: 42750699047
+          github-token: ${{ github.token }}
+      - name: Extract actual XNU8796 K70 16K headers
+        run: |
+          mkdir prior-tree
+          tar xzf prior-buildtree/buildtree.tgz -C prior-tree
+      - name: Execute actual memory functions with both CPU geometries
+        run: |
+          for page in 4096 16384; do
+            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -Igpu-wifi/tests/mock -Igpu-wifi/Adreno740 gpu-wifi/tests/gpu_memory_host.cpp -o memory-$page
+            ASAN_OPTIONS=detect_leaks=0 ./memory-$page
+          done
+      - name: Compile memory and dependent units with Apple kernel extensions
+        run: |
+          python3 gpu-wifi/compile_gpu_units.py --xnu-root "$PWD/prior-tree" --reference "$PWD/gpu-wifi/references" --log "$PWD/gpu-wifi/compile-recipes.log" --compiler "$(xcrun -f clang++)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k70-gpu-memory-compile
+          path: |
+            gpu-wifi/gpu-kernel-compile.json
+            gpu-wifi/kernel-objects
+          retention-days: 7
