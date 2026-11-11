@@ -42,6 +42,11 @@ IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
     if(!status)status=tables_.allocateCpuPages(TablePages*0x1000,report->output_bits,true);
     for(unsigned i=0;!status && i<GpuBufferCount;++i)
         status=buffers_[i].allocateCpuPages(kBytes[i],report->output_bits,true);
+    /* The CP uses non-cacheable PTEs for these owned buffers. Set the CPU
+     * attribute over complete native pages before the VM retains them. Tables
+     * remain cacheable, matching the coherent SMMU table-walk configuration. */
+    for(unsigned i=0;!status && i<GpuBufferCount;++i)
+        status=buffers_[i].makeWriteCombined();
     if(!status) {
         step(Prepare);
         status=smmu_.prepare(&tables_,0,0,GpuApertureBytes,NativeAdrenoSmmuContext::MaxLeaves,

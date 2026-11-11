@@ -37,6 +37,7 @@ public:
     IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
         const uint16_t sids[2],void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
     bool ready() const {return ready_;}
+    NativeAdrenoMemory &buffer(unsigned index) {return buffers_[index];}
     const NativeAdrenoMemory &buffer(unsigned index) const {return buffers_[index];}
     NativeAdrenoVm *vm() {return ready_?&vm_:nullptr;}
 };

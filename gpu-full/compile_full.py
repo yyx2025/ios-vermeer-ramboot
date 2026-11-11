@@ -19,12 +19,16 @@ def recipe(suffix):
         i+=1
     return result
 c=recipe('/bsd/dev/vermeer_usb_debug.c');cpp=recipe('/iokit/Kernel/arm/hid/SweetHID.cpp')
-includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','Ath12kWifi/include','K70')]+[X/'xnu/osfmk']
-page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n')
+includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','Ath12kWifi/include','K70','generated/sheng-gmu','generated/sheng-gpu-smmu')]+[X/'xnu/osfmk']
+required_headers=('ShengGmuSource.h','ShengGmuVotesSource.h','ShengGmuCommandDbSource.h','ShengGpuSmmuSource.h')
+for name in required_headers:
+    assert any((path/name).is_file() for path in includes), 'Missing actual startup policy: '+name
+page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n'+''.join('#include "'+name+'"\n' for name in required_headers))
 units=list(sorted((W/'Adreno740').glob('*.cpp')))+[W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page]
 units+=list(sorted((W/'ArmSmmu4K').glob('ArmSmmu4K*.c')))
 units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c','AdrenoHfiVotes.c','AdrenoFirmware.c')]
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
+units+=[W/'Sm8550Platform/ShengGmu.c',W/'Sm8550Platform/ShengGmuCommandDb.c',W/'K70/ShengGmuVotes.c',W/'K70/K70GpuStartup.cpp']
 assert len({p.stem for p in units})==len(units)
 def compile_one(source):
     compiler=shutil.which('clang++' if source.suffix=='.cpp' else 'clang')
@@ -37,6 +41,7 @@ def compile_one(source):
 with concurrent.futures.ThreadPoolExecutor(4) as pool:rows=list(pool.map(compile_one,units))
 report={'profile':'iOS16/XNU8796 DEVELOPMENT_ARM64_SWEET, 16KiB CPU pages','checks':rows,
     'passing_units':sum(r['exit_code']==0 for r in rows),'total_units':len(rows),
+    'actual_gmu_startup_compiled':True,'required_generated_policy':list(required_headers),
     'linked_to_boot_kernel':False,'hardware_verified':False}
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')
 for row in rows:
@@ -46,6 +51,12 @@ if any(row['exit_code'] for row in rows):raise SystemExit(1)
 archive=OUT/'libAdreno740-iOS16.a'
 gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page)]
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
+symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
+required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
+    'NativeAdrenoGmuContextBringup','NativeAdrenoGpuContextBringup','k70_gpu_prepare_gmu')
+for symbol in required_symbols:
+    assert ' T _'+symbol in symbols,'Actual startup definition missing: '+symbol
+report['required_startup_definitions']=list(required_symbols)
 report['gpu_archive_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
 report['gpu_archive_bytes']=archive.stat().st_size
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')

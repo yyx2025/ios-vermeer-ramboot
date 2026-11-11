@@ -50,6 +50,14 @@ IOReturn NativeAdrenoGmuAllocator::mapInto(NativeAdrenoVm *vm)
     NativeAdrenoMemory *objects[]={&icache_,&dummy_,&debug_,&log_,&hfi_};
     const uint64_t iovas[]={layout_.icache_iova,layout_.dummy_iova,layout_.debug_iova,
         layout_.log_iova,layout_.hfi_iova};
+    /* The GMU PTEs below are non-cacheable. Change each whole CPU-owned page
+     * before any mapping retains it, so the original CPU view and any future
+     * HFI view share that attribute. Creating a second uncached mapping alone
+     * would leave a dirty cacheable alias of these pages on a 16KiB kernel. */
+    for(NativeAdrenoMemory *object:objects) {
+        const IOReturn status=object->makeWriteCombined();
+        if(status)return status;
+    }
     for(size_t index=0;index<5;++index) {
         /* a6xx_gmu.c maps the icache MAP_PRIV and every buffer without NOEXEC; here only the icache, which
          * the GMU executes from, is executable, and the data buffers stay execute-never. */

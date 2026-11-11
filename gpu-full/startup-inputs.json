@@ -1,0 +1,45 @@
+{
+  "inputs": {
+    "Sm8550Platform/ShengGmu.c": {
+      "source": "D:\\ios hack\\refs\\UniXNU-sm8550-common\\kits\\Sm8550Platform\\ShengGmu.c",
+      "sha256": "e5905a867c09be2f0dfdeac62ebd1620b83bb6d0ff0d3060c3603a21b04b40c0"
+    },
+    "Sm8550Platform/ShengGmuCommandDb.c": {
+      "source": "D:\\ios hack\\refs\\UniXNU-sm8550-common\\kits\\Sm8550Platform\\ShengGmuCommandDb.c",
+      "sha256": "36a605f907f8c4e9794aa92e2ebe0eb78b528ef1b1b596c913012162423b1943"
+    },
+    "K70/ShengGmuVotes.c": {
+      "source": "D:\\ios hack\\refs\\UniXNU-sheng\\package\\ShengGmuVotes.c",
+      "sha256": "6d622e688a9aa85fbf7da356432b636925c1701d581ccc2040baa054dfe9df3e"
+    },
+    "K70/GpuPowerBoard.h": {
+      "source": "D:\\ios hack\\refs\\UniXNU-sheng\\package\\GpuPowerBoard.h",
+      "sha256": "ab9afb03418d055440e67b1e6daa106d180550662efc5636a90c95d350f61b09"
+    },
+    "tests/GpuPowerBoardTests.c": {
+      "source": "D:\\ios hack\\refs\\UniXNU-sheng\\package\\GpuPowerBoardTests.c",
+      "sha256": "7f298ff710d85842f30c5796ae521d66f6057d734a5e99eea4ea1e453ee2a28e"
+    },
+    "generated/sheng-gmu/ShengGmuCommandDbSource.h": {
+      "source": "D:\\ios hack\\work\\ahzcpp-ram-research-20261108\\r33s\\UniXNU-vermeer-7419b8b0d9a025a84550526116a094bb5ab47032\\share\\K70-r33s-\u4ea4\u4ed8\u5305\\GPU\u9a71\u52a8-\u672a\u5b9e\u9a8c\\gpu-next\\generated\\sheng-gmu\\ShengGmuCommandDbSource.h",
+      "sha256": "d5a27e57cc2b84f24f062404dc3892a9d41d98b8641e670334b6ba9cd7d8f1d7"
+    },
+    "generated/sheng-gmu/ShengGmuSource.h": {
+      "source": "D:\\ios hack\\work\\ahzcpp-ram-research-20261108\\r33s\\UniXNU-vermeer-7419b8b0d9a025a84550526116a094bb5ab47032\\share\\K70-r33s-\u4ea4\u4ed8\u5305\\GPU\u9a71\u52a8-\u672a\u5b9e\u9a8c\\gpu-next\\generated\\sheng-gmu\\ShengGmuSource.h",
+      "sha256": "fe2e077acaf57ea0475ca63592901ea3e96b887e1648e05cd44d3c140e8be9e0"
+    },
+    "generated/sheng-gmu/ShengGmuVotesSource.h": {
+      "source": "D:\\ios hack\\work\\ahzcpp-ram-research-20261108\\r33s\\UniXNU-vermeer-7419b8b0d9a025a84550526116a094bb5ab47032\\share\\K70-r33s-\u4ea4\u4ed8\u5305\\GPU\u9a71\u52a8-\u672a\u5b9e\u9a8c\\gpu-next\\generated\\sheng-gmu\\ShengGmuVotesSource.h",
+      "sha256": "d8a2cfc890653ae55c587ada9ad3768357757b8bd036e2e2497ba7b4acd0d4e5"
+    },
+    "generated/sheng-gpu-smmu/ShengGpuSmmuSource.h": {
+      "source": "D:\\ios hack\\work\\ahzcpp-ram-research-20261108\\r33s\\UniXNU-vermeer-7419b8b0d9a025a84550526116a094bb5ab47032\\share\\K70-r33s-\u4ea4\u4ed8\u5305\\GPU\u9a71\u52a8-\u672a\u5b9e\u9a8c\\gpu-next\\generated\\sheng-gpu-smmu\\ShengGpuSmmuSource.h",
+      "sha256": "3b1ae03701ee6744928b03af2a436a0f45131f9244fab78fc2cb889ad44fe682"
+    }
+  },
+  "crosscheck_sha256": "bad28424d603227b2cc7c31e19e98df51620aeebbe977eb66b26278fd8e38803",
+  "linux_revision": "42f3b40c702abbc37c3a04c95af008cd283aeaf3",
+  "actual_command_db_available": false,
+  "firmware_uploaded": false,
+  "hardware_verified": false
+}

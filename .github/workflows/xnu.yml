@@ -30,6 +30,10 @@ jobs:
           done
       - name: Compile all GPU units, dependencies and Wi-Fi network interface
         run: python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
+      - name: Verify gated SM8550 power operations
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/GpuPowerBoardTests.c -o gpu-power-check
+          ./gpu-power-check
       - uses: actions/upload-artifact@v4
         if: always()
         with:
