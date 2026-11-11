@@ -94,10 +94,13 @@ wifi_archive.unlink(missing_ok=True)
 subprocess.run(['xcrun','ar','rcs',str(wifi_archive),*[str(OUT/(s.stem+'.o')) for s in wifi_units]],check=True)
 wifi_symbols=subprocess.check_output(['xcrun','nm','-g',str(wifi_archive)],text=True)
 required_wifi_symbols=('k70_wifi_startup','k70_wifi_dispatch','sheng_wifi_wake',
-    'k70_wifi_its_init','k70_wifi_its_handle_irq','k70_wifi_its_irq_hook_version')
+    'k70_wifi_its_init','k70_wifi_its_handle_irq')
 for symbol in required_wifi_symbols:
     assert ' T _'+symbol in wifi_symbols,'Native Wi-Fi definition missing: '+symbol
+assert ' U _k70_wifi_its_irq_hook_version' in wifi_symbols, \
+    'Native Wi-Fi archive must retain the strong XNU IRQ-hook dependency'
 report['required_wifi_definitions']=list(required_wifi_symbols)
+report['required_wifi_kernel_definitions']=['k70_wifi_its_irq_hook_version']
 report['wifi_archive_sha256']=hashlib.sha256(wifi_archive.read_bytes()).hexdigest()
 report['wifi_archive_bytes']=wifi_archive.stat().st_size
 report['object_files']={p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
