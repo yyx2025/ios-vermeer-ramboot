@@ -1,4 +1,4 @@
-name: XNU bring-up lab
+name: K70 iOS16 ABI clean kernel rebuild
 
 permissions:
   contents: read
@@ -80,6 +80,7 @@ jobs:
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           if [ "$PROFILE" = vermeer-ios-ram-gui ]; then
             python3 tools/prepare_ram_gui.py .ci-patches
+            python3 v11-kernel/append_kernel_patches.py .ci-patches
             cp .ci-patches/*.patch .ci-patches/*.sh dxb/patches/
           elif [ "$PROFILE" = vermeer-early ]; then
             python3 tools/prepare_vermeer.py xnu/patches .ci-patches
@@ -156,6 +157,9 @@ jobs:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'true' && '-k' || '' }}
         run: bash build.sh
+
+      - name: Verify rebuilt iOS16 IOKit and NativePrelink ABI
+        run: python3 v11-kernel/check_kernel_abi.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
 
       - name: Build minimal RAM-root init
         if: ${{ success() && (env.PROFILE == 'vermeer-ramroot' || env.PROFILE == 'vermeer-ufs-probe' || env.PROFILE == 'vermeer-hfs-ramroot' || env.PROFILE == 'vermeer-ufs-block') }}

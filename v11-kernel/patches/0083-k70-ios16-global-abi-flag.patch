@@ -1,0 +1,11 @@
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -289,6 +289,8 @@
+ ifdef RC_NONARCH_CFLAGS
+ OTHER_CFLAGS = $(RC_NONARCH_CFLAGS)
+ endif
++# Apply the iOS IOKit ABI to every cleanly built C/C++ translation unit.
++OTHER_CFLAGS += -DK70_IOS16_IOKIT_ABI=1 -DK70_NATIVE_RUNTIME_TRUST=1
+ 
+ #
+ # Debug info

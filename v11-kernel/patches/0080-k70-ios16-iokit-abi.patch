@@ -1,0 +1,11 @@
+--- a/libkern/libkern/c++/OSMetaClass.h
++++ b/libkern/libkern/c++/OSMetaClass.h
+@@ -162,7 +162,7 @@
+ 
+ #ifdef XNU_KERNEL_PRIVATE
+ 
+-#if !XNU_TARGET_OS_OSX
++#if !XNU_TARGET_OS_OSX || (defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI)
+ #define APPLE_KEXT_VTABLE_PADDING   0
+ #else /* !XNU_TARGET_OS_OSX */
+ #define APPLE_KEXT_VTABLE_PADDING   1

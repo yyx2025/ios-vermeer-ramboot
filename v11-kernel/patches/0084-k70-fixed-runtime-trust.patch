@@ -1,0 +1,97 @@
+--- a/bsd/kern/kern_trustcache.c
++++ b/bsd/kern/kern_trustcache.c
+@@ -229,6 +229,74 @@
+ TrustCacheMutableRuntime_t trust_cache_mut_rt_storage;
+ SECURITY_READ_ONLY_LATE(TrustCacheMutableRuntime_t*) trust_cache_mut_rt = &trust_cache_mut_rt_storage;
+ 
++#if defined(K70_NATIVE_RUNTIME_TRUST)
++#include "k70_runtime_trust_data.h"
++
++__attribute__((used)) const uint32_t k70_runtime_trust_init_version = 1;
++uint32_t k70_runtime_trust_loaded = 0;
++static TrustCache_t k70_runtime_trust_object;
++
++static void
++k70_load_fixed_runtime_trust(void)
++{
++	const TrustCacheModule2_t *module = (const TrustCacheModule2_t *)k70_runtime_trust_module;
++	const TrustCacheInterface_t *interface = &amfi->TrustCache;
++	if (k70_runtime_trust_loaded || !trust_cache_rt || !trust_cache_mut_rt ||
++	    interface->version < 2 || !interface->loadModule || !interface->query ||
++	    !interface->queryGetTCType || !interface->queryGetHashType ||
++	    !interface->queryGetFlags || !interface->queryGetConstraintCategory ||
++	    module->version != kTCVersion2 || module->numEntries != 2 ||
++	    sizeof(k70_runtime_trust_module) != sizeof(TrustCacheModule2_t) + 2 * sizeof(TrustCacheEntry2_t)) {
++		panic("K70: fixed runtime trust module/interface is unavailable");
++	}
++	for (uint32_t i = 0; i < 2; i++) {
++		const TrustCacheEntry2_t *entry = &module->entries[i];
++		if (memcmp(entry->CDHash, k70_runtime_expected_cdhashes[i], kTCEntryHashSize) ||
++		    entry->hashType != CS_HASHTYPE_SHA256 || entry->flags ||
++		    entry->constraintCategory || entry->reserved0) {
++			panic("K70: fixed runtime trust module entry does not match this kernel");
++		}
++	}
++
++	/* This is an internal one-time import of bytes pinned in this kernel.
++	 * Public legacy loading stays unsupported. Enable the parser only while
++	 * importing this fixed module under its real concurrency lock, then
++	 * immediately restore the normal runtime policy before unlock/lockdown.
++	 */
++	lck_rw_lock_exclusive(&trust_cache_rt_lock);
++	const bool previous_allow_legacy = trust_cache_rt->allowLegacyTC;
++	trust_cache_rt->allowLegacyTC = true;
++	TCReturn_t result = interface->loadModule(trust_cache_rt, kTCTypeLegacy,
++	    &k70_runtime_trust_object, (uintptr_t)k70_runtime_trust_module,
++	    sizeof(k70_runtime_trust_module));
++	trust_cache_rt->allowLegacyTC = previous_allow_legacy;
++	if (result.error != kTCReturnSuccess) {
++		lck_rw_unlock_exclusive(&trust_cache_rt_lock);
++		panic("K70: original AMFI rejected fixed runtime trust module: %u", result.error);
++	}
++
++	for (uint32_t i = 0; i < 2; i++) {
++		TrustCacheQueryToken_t token = {0};
++		TCType_t type = kTCTypeInvalid;
++		uint8_t hash_type = 0, constraint = 0xff;
++		uint64_t flags = UINT64_MAX;
++		result = interface->query(trust_cache_rt, kTCQueryTypeAll,
++		    k70_runtime_expected_cdhashes[i], &token);
++		if (result.error != kTCReturnSuccess || token.trustCache != &k70_runtime_trust_object ||
++		    token.trustCacheEntry != &module->entries[i] ||
++		    interface->queryGetTCType(&token, &type).error != kTCReturnSuccess || type != kTCTypeLegacy ||
++		    interface->queryGetHashType(&token, &hash_type).error != kTCReturnSuccess || hash_type != CS_HASHTYPE_SHA256 ||
++		    interface->queryGetFlags(&token, &flags).error != kTCReturnSuccess || flags != 0 ||
++		    interface->queryGetConstraintCategory(&token, &constraint).error != kTCReturnSuccess || constraint != 0) {
++			lck_rw_unlock_exclusive(&trust_cache_rt_lock);
++			panic("K70: original AMFI query did not confirm the exact fixed runtime entry");
++		}
++	}
++	k70_runtime_trust_loaded = 2;
++	lck_rw_unlock_exclusive(&trust_cache_rt_lock);
++}
++#endif /* K70_NATIVE_RUNTIME_TRUST */
++
+ void
+ trust_cache_runtime_init(void)
+ {
+@@ -256,6 +324,9 @@
+ 	 * initialized runtime that would later dereference absent callbacks.
+ 	 */
+ 	if (img4if == NULL || amfi == NULL) {
++#if defined(K70_NATIVE_RUNTIME_TRUST)
++		panic("K70: native runtime requires original Image4 and AMFI before trust initialization");
++#endif
+ 		trust_cache_rt = NULL;
+ 		trust_cache_mut_rt = NULL;
+ 		printf("SWEET: trust caches unavailable (Image4/AMFI not installed)\n");
+@@ -285,6 +356,9 @@
+ 
+ 	/* Initialize the read-write lock */
+ 	lck_rw_init(&trust_cache_rt_lock, &trust_cache_lck_grp, 0);
++#if defined(K70_NATIVE_RUNTIME_TRUST)
++	k70_load_fixed_runtime_trust();
++#endif
+ }
+ 
+ static kern_return_t
