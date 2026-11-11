@@ -36,8 +36,7 @@ extern "C" {
 #include <stdarg.h>
 #include "nw_abi.h"
 
-extern "C" void native_wifi_logf(int level, const char *fmt, ...);
-extern "C" int sheng_wifi_file(const char *name, const uint8_t **data, size_t *size);
+// Retain errors without adding a sampling thread or persistent traffic log.
 extern "C" void sheng_wifi_wake(void);   // WifiProbe.cpp: the WiFi thread sends the queued frame now
 
 #define SIOCSA80211 0x802869c8UL   // _IOW('i', 200, struct apple80211req)
@@ -45,8 +44,6 @@ extern "C" void sheng_wifi_wake(void);   // WifiProbe.cpp: the WiFi thread sends
 
 // (the header declares it without C linkage; the symbol is the C one)
 extern "C" int sheng_kev_post(struct kev_msg *) __asm__("_kev_post_msg");
-extern "C" int boot_kthread_report(const char *name, char *out, unsigned size);   // BootUiTraceProbe.c
-extern "C" unsigned boot_cpu_kick(char *out, unsigned size);                      // BootUiTraceProbe.c
 
 namespace {
 
@@ -96,7 +93,6 @@ bool gPower = true;
 bool gKeyed;   // the last join used a passphrase
 uint32_t gRxFrames, gRxErrors; int gRxLastError;
 uint32_t gRxNoBuffer, gRxChains, gRxLongest;   // frames dropped for want of a buffer, frames that took a chain, the longest frame
-struct { unsigned count, kicks, cleared, longest; bool kicked; } gStall;   // input thread stalls (check_input)   // frames handed to the stack, refused ones and the last refusal
 int gAssocResult = kAssocOk;
 unsigned gScanCursor, gScanning;
 bool gUserJoin;   // the wireless daemon joined, left or switched the radio itself: the unattended test join steps aside
@@ -105,7 +101,7 @@ uint32_t gLogged[256 / 32];
 void log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void log(int level, const char *fmt, ...) {
   char line[160]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
-  native_wifi_logf(level, "%s", line);
+  if(level<=3)IOLog("K70 Wi-Fi: %s\n",line);
 }
 
 // ---- events to the framework: class IEEE 802.11 (6), subclass 1, data starting with the interface name ----
@@ -460,109 +456,6 @@ void publish_registry(const char *ifname) {
   controller->release();
 }
 
-// en0's IPv4 addresses and packet counts, for the log.
-void log_traffic() {
-  if (!gIf) return;
-  char text[64] = "none"; ifaddr_t *list = nullptr;
-  if (!ifnet_get_address_list_family(gIf, &list, AF_INET) && list) {
-    if (list[0]) { struct sockaddr_in a; memset(&a, 0, sizeof a);
-      if (!ifaddr_address(list[0], reinterpret_cast<struct sockaddr *>(&a), sizeof a)) { const uint8_t *b = reinterpret_cast<const uint8_t *>(&a.sin_addr); snprintf(text, sizeof text, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]); } }
-    ifnet_free_address_list(list); }
-  struct ifnet_stats_param stats; memset(&stats, 0, sizeof stats); ifnet_stat(gIf, &stats);
-  char tx[160]; nw_wifi_tx_reasons(tx, sizeof tx);
-  log(6, "wifi-net: en0 address %s, packets in %llu out %llu; frames to the stack %u, refused %u (last %d)", text, static_cast<unsigned long long>(stats.packets_in),
-      static_cast<unsigned long long>(stats.packets_out), gRxFrames, gRxErrors, gRxLastError);
-  log(6, "wifi-net: tx %s", tx);
-  log(6, "wifi-net: in arp %u ip4 %u dhcp %u ip6 %u other %u", gKindsIn.arp, gKindsIn.ip4, gKindsIn.dhcp, gKindsIn.ip6, gKindsIn.other);
-  log(6, "wifi-net: out arp %u ip4 %u dhcp %u ip6 %u other %u", gKindsOut.arp, gKindsOut.ip4, gKindsOut.dhcp, gKindsOut.ip6, gKindsOut.other);
-  log(6, "wifi-net: input stalls %u, kicks %u, cleared after a kick %u, longest %u s", gStall.count, gStall.kicks, gStall.cleared, gStall.longest);
-  log(6, "wifi-net: rx no buffer %u, chained %u, longest frame %u", gRxNoBuffer, gRxChains, gRxLongest);
-}
-
-// The interface's input thread made runnable and then never run while frames kept coming (i468: from 231 s on, a priority 81 thread with no
-// stack, so the DHCP answers never reached the client and the lease was lost). Checked every second: on a stall where that thread is, and
-// every processor asked to check its ASTs again, which is what a preemption signal that never arrived would have done.
-void check_input() {
-  static uint64_t lastIn; static uint32_t lastFrames; static unsigned stalled;
-  struct ifnet_stats_param stats; memset(&stats, 0, sizeof stats); ifnet_stat(gIf, &stats);
-  const bool moving = stats.packets_in != lastIn, offered = gRxFrames != lastFrames;
-  lastIn = stats.packets_in; lastFrames = gRxFrames;
-  if (moving) {
-    if (stalled) { if (gStall.kicked) gStall.cleared++; log(6, "wifi-net: input moves again after %u s%s", stalled, gStall.kicked ? " and a kick" : ""); }
-    stalled = 0; gStall.kicked = false; return;
-  }
-  if (!offered) return;   // nothing new handed over: an idle link, not a stall
-  if (++stalled > gStall.longest) gStall.longest = stalled;
-  if (stalled == 1) gStall.count++;
-  if (stalled > 3) return;   // reported and kicked twice; the per-ten-seconds line keeps the counts
-  char where[240];
-  if (boot_kthread_report("dlil_input_en0", where, sizeof where)) log(6, "wifi-net: input thread not found");
-  else for (size_t at = 0, n = strlen(where); at < n; at += 90) log(6, "wifi-net: input thread %u: %.90s", static_cast<unsigned>(at / 90), where + at);
-  if (stalled < 2) return;   // one quiet second can be a slow thread
-  char cpus[240]; const unsigned sent = boot_cpu_kick(cpus, sizeof cpus); gStall.kicks++; gStall.kicked = true;
-  for (size_t at = 0, n = strlen(cpus); at < n; at += 90) log(6, "wifi-net: kick %u (%u sent) %u: %.90s", gStall.kicks, sent, static_cast<unsigned>(at / 90), cpus + at);
-}
-
-// IOKit's busy services: the network configuration waits for IOKit to be quiet before it names interfaces, and the wireless daemon waits
-// for that. Logged each round until the registry is quiet once; leaves first (a busy service whose children are all quiet).
-void log_busy() {
-  static bool quietSeen; if (quietSeen) return;
-  IOService *root = IOService::getServiceRoot(); if (!root) return;
-  const UInt32 busy = root->getBusyState();
-  if (!busy) { quietSeen = true; log(6, "wifi-net: IOKit is quiet"); return; }
-  char line[110]; int at = snprintf(line, sizeof line, "wifi-net: IOKit busy %u:", static_cast<unsigned>(busy)); unsigned shown = 0;
-  if (IORegistryIterator *it = IORegistryIterator::iterateOver(gIOServicePlane, kIORegistryIterateRecursively)) {
-    while (OSObject *o = it->getNextObject()) {
-      IOService *svc = OSDynamicCast(IOService, o); if (!svc || !svc->getBusyState()) continue;
-      bool busyChild = false;
-      if (OSIterator *ch = svc->getChildIterator(gIOServicePlane)) { while (OSObject *c = ch->getNextObject()) { IOService *cs = OSDynamicCast(IOService, c); if (cs && cs->getBusyState()) { busyChild = true; break; } } ch->release(); }
-      if (busyChild) continue;
-      if (at < static_cast<int>(sizeof line) - 2) at += snprintf(line + at, sizeof line - at, " %s(%s)", svc->getName(), svc->getMetaClass()->getClassName());
-      if (++shown >= 6) break;
-    }
-    it->release();
-  }
-  log(6, "%s", line);
-}
-
-// While joined, every 10 s: the address, the packet counts and the kinds of traffic (whoever made the join).
-void trafficLog(void *, wait_result_t) {
-  for (unsigned second = 1;; ++second) {
-    IOSleep(1000); nw_wifi_status st; nw_wifi_status_get(&st);
-    if (st.state != NW_STA_UP) continue;
-    check_input(); if (second % 10 == 0) log_traffic();
-  }
-}
-
-// Unattended testing: when the firmware container holds a file named join.txt (the network name on the first line, the key on the second) the
-// board joins that network by itself once a scan has found it, with the call the wireless daemon's join makes. Without the file nothing happens.
-void autoJoin(void *, wait_result_t) {
-  char ssid[33] = {}, psk[65] = {};
-  const uint8_t *file = nullptr; size_t length = 0;
-  if (sheng_wifi_file("join.txt", &file, &length) || !file || !length) { thread_terminate(current_thread()); return; }
-  { size_t i = 0, o = 0; while (i < length && file[i] != '\n' && o < 32) ssid[o++] = static_cast<char>(file[i++]);
-    while (i < length && file[i] != '\n') ++i; ++i; o = 0;
-    while (i < length && file[i] != '\n' && o < 64) psk[o++] = static_cast<char>(file[i++]); }
-  const bool hasPsk = psk[0] != 0; const size_t sl = strlen(ssid), pl = strlen(psk);
-  log(6, "wifi-net: auto join of a network with a %zu byte name and a %zu byte key", sl, pl);
-  for (unsigned round = 0; round < 40; ++round) {
-    IOSleep(3000);
-    log_busy();
-    if (gUserJoin) { log(6, "wifi-net: auto join stops: the wireless daemon took over"); break; }
-    nw_wifi_status st; nw_wifi_status_get(&st);
-    if (st.state == NW_STA_UP) continue;   // the traffic thread logs the address and the packets
-    if (st.state >= NW_STA_AUTH) continue;
-    bool found = false; nw_bss_info b;
-    for (int i = 0, n = nw_wifi_bss_count(); i < n; ++i)
-      if (!nw_wifi_bss_get(i, &b) && b.ssid_len == sl && !memcmp(b.ssid, ssid, sl)) { found = true; break; }
-    log(6, "wifi-net: auto join round %u: %d networks seen, wanted one %s", round, nw_wifi_bss_count(), found ? "found" : "not found");
-    if (found) { gKeyed = hasPsk; const int r = nw_wifi_connect(reinterpret_cast<const uint8_t *>(ssid), sl, nullptr, hasPsk ? psk : nullptr, hasPsk ? pl : 0); log(6, "wifi-net: auto join requested: %d", r); }
-    else nw_wifi_scan(nullptr, 0);
-  }
-  memset(psk, 0, sizeof psk);
-  thread_terminate(current_thread());
-}
-
 }  // namespace
 
 // Called once the module has a station interface and a hardware address.
@@ -588,10 +481,6 @@ extern "C" void sheng_wifi_net_start(const uint8_t mac[6]) {
   gIf = ifp; ifnet_set_flags(ifp, IFF_UP, IFF_UP);
   nw_wifi_set_events(&gEvents);
   publish_registry("en0");
-  // sheng-wifi-aj=0 leaves joining to Settings even when the container holds join.txt.
-  { uint32_t aj = 1; PE_parse_boot_argn("sheng-wifi-aj", &aj, sizeof aj);
-    thread_t t = nullptr; if (aj && kernel_thread_start(autoJoin, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
-    t = nullptr; if (kernel_thread_start(trafficLog, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t); }
   log(6, "wifi-net: en0 is up, hardware address %02x:%02x:%02x:%02x:%02x:%02x, capabilities 0x%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
       ifnet_capabilities_enabled(ifp));
 }

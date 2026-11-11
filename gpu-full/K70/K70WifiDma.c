@@ -18,15 +18,28 @@ void *k70_wifi_dma_alloc(struct K70WifiDmaArena *a,size_t n,uint64_t *bus)
     if(bus)*bus=0;
     if(!a || !a->cpu || a->quarantined || !bus || !n || n>SIZE_MAX-(a->page-1))return 0;
     const size_t owned=(n+a->page-1)&~(a->page-1);
+    if(owned>a->bytes)return 0;
+    /* MHI firmware transfers require natural power-of-two DMA alignment for
+     * the requested length. Keep CPU ownership page-sized, but align the bus
+     * address itself, including arenas whose base is only page aligned. */
+    size_t alignment=a->page;
+    while(alignment<n) {
+        if(alignment>SIZE_MAX/2)return 0;
+        alignment*=2;
+    }
     for(size_t i=0;i<a->count;++i) {
         struct K70WifiDmaBlock *b=&a->blocks[i];
         if(b->requested || b->owned<owned)continue;
-        if(b->owned>owned) {
-            if(a->count==K70WifiDmaMaxBlocks)continue;
-            memmove(&a->blocks[i+2],&a->blocks[i+1],(a->count-i-1)*sizeof *b);
-            a->blocks[i+1]=(struct K70WifiDmaBlock){b->offset+owned,b->owned-owned,0};
-            ++a->count;b->owned=owned;
-        }
+        const size_t gap=(size_t)(-(a->bus+b->offset)&(alignment-1));
+        if(gap>b->owned || owned>b->owned-gap)continue;
+        const size_t tail=b->owned-gap-owned,offset=b->offset;
+        const size_t extra=(gap!=0)+(tail!=0);
+        if(extra>K70WifiDmaMaxBlocks-a->count)continue;
+        memmove(&a->blocks[i+1+extra],&a->blocks[i+1],(a->count-i-1)*sizeof *b);
+        if(gap) {*b=(struct K70WifiDmaBlock){offset,gap,0};++b;}
+        *b=(struct K70WifiDmaBlock){offset+gap,owned,0};
+        if(tail)b[1]=(struct K70WifiDmaBlock){offset+gap+owned,tail,0};
+        a->count+=extra;
         b->requested=n;a->used+=owned;
         void *cpu=a->cpu+b->offset;memset(cpu,0,owned);
         /* The whole CPU extent, including padding, is clean before any DMA publication. */

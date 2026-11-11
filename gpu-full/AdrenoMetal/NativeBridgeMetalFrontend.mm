@@ -87,18 +87,6 @@ static NSError *nbError(NSString *why) {
  return [NSError errorWithDomain:@"org.blu-sharky.native-metal" code:-1 userInfo:@{NSLocalizedDescriptionKey:why?:@"refused"}];
 }
 static NSString *lastError() {return [NSString stringWithUTF8String:nmb_last_error()];}
-// The render pipeline journal: one line per render pipeline creation (when, on which thread, how long, the outcome, both functions with
-// every constant value, the attachments, blending and vertex descriptor) appended to pipelines.log in the runtime's cache directory, which
-// the board log exports with the caches (CacheExport.h): every pipeline a boot made, or was refused, can be made again on the host.
-static std::mutex gJournalLock;
-static std::string gJournalPath;
-static uint64_t gJournalBegan;
-static void journal(const std::string &line) {
- if(gJournalPath.empty())return;
- std::lock_guard<std::mutex> lock(gJournalLock);
- if(FILE *f=fopen(gJournalPath.c_str(),"a")){fwrite(line.data(),1,line.size(),f);fputc('\n',f);fclose(f);}
-}
-
 @interface NBObject : NSObject
 @property(atomic,copy) NSString *label;
 @end
@@ -362,7 +350,6 @@ static uint64_t constantBytes(uint64_t type) {
   default:return 0;
  }
 }
-static std::string quartzCoreCallers();
 @implementation NBLibrary
 - (void)dealloc {nmb_library_release(_handle);}
 - (id<MTLFunction>)newFunctionWithName:(NSString *)name constantValues:(MTLFunctionConstantValues *)values error:(NSError **)error {
@@ -390,13 +377,6 @@ static std::string quartzCoreCallers();
  }
  const uint64_t functionBegan=nowUs();
  NmbFunction *handle=nmb_function_new_specialized(_handle,name.UTF8String,constants.data(),(uint32_t)constants.size());gTimeFunction.add(functionBegan);
- // One S line per specialization (int-155: every QuartzCore pipeline was made on its draw, and a refused generic function would leave its
- // generic pipeline unmade without a word): the function, its constants, the time, the refusal and QuartzCore's callers.
- if(!gJournalPath.empty()) {
-  char head[96];snprintf(head,sizeof head,"S t=%llu us=%llu ok=%d name=",(unsigned long long)((functionBegan-gJournalBegan)/1000),
-      (unsigned long long)(nowUs()-functionBegan),handle?1:0);
-  journal(head+std::string(name.UTF8String?:"?")+" k="+text+(handle?std::string():" err="+std::string(lastError().UTF8String?:"?"))+" | "+quartzCoreCallers());
- }
  if(!handle){
   noteProblem([NSString stringWithFormat:@"specialized function %@: %@",name,lastError()]);
   if(error)*error=nbError([NSString stringWithFormat:@"specialized function: %@",lastError()]);return nil;
@@ -1021,111 +1001,6 @@ template <typename T> static T failWith(NSError **error,NSString *what,T value) 
  if(error)*error=nbError([NSString stringWithFormat:@"%@: %@",what,lastError()]);
  return value;
 }
-// Which of QuartzCore's paths asked for a pipeline (int-153: every one was made synchronously on its render thread and no generic pipeline
-// was ever asked for): its return addresses as offsets from its image header (header 0x189429000 in the 21H461 cache, so offset +
-// 0x189429000 is the address in that image's disassembly), the global feature flags it ORs into every context's flags, and its
-// CA_DISABLE_GENERIC_SHADERS, CA_FORCE_GENERIC_SHADERS and CA_DISABLE_PRECOMPILED_PIPELINES debug options (ca_debug_options +0x55..0x57,
-// read only where dladdr places that address in QuartzCore).
-static std::string quartzCoreCallers() {
- void *frames[24];const int n=backtrace(frames,24);
- std::string out="qc";char item[32];unsigned kept=0;uintptr_t header=0;
- for(int i=0;i<n && kept<8;i++) {
-  Dl_info info{};
-  if(!dladdr(frames[i],&info) || !info.dli_fname || !strstr(info.dli_fname,"/QuartzCore"))continue;
-  header=(uintptr_t)info.dli_fbase;
-  snprintf(item,sizeof item," %lx",(unsigned long)((uintptr_t)frames[i]-header));out+=item;++kept;
- }
- // The context's own flags (int-154: the draws never took the generic path, which only bit 18 of MetalContext +0x1a0 or the debug byte
- // can cause, and the debug byte was 0). MetalContext::create_pipeline_state (header +0x143000) saves its caller's x19 at fp-8, and its
- // caller MetalContext::draw keeps `this` in x19: the frame record whose return address is +0x143214 links to that frame. Read with
- // vm_read so a different stack layout reports ctx=? instead of faulting.
- if(header) {
-  uintptr_t fp=(uintptr_t)__builtin_frame_address(0),ctx=0;
-  for(unsigned depth=0;fp && depth<24;++depth) {
-   uintptr_t record[2]={};vm_size_t got=0;
-   if(vm_read_overwrite(mach_task_self(),fp,sizeof record,(vm_address_t)record,&got)!=KERN_SUCCESS || got!=sizeof record)break;
-   if(record[1]-header==0x143214) {
-    uintptr_t saved=0;
-    if(record[0] && vm_read_overwrite(mach_task_self(),record[0]-8,sizeof saved,(vm_address_t)&saved,&got)==KERN_SUCCESS)ctx=saved;
-    break;
-   }
-   if(record[0]<=fp)break;
-   fp=record[0];
-  }
-  uint32_t flags[2]={};vm_size_t got=0;
-  if(ctx && vm_read_overwrite(mach_task_self(),ctx+0x1a0,4,(vm_address_t)&flags[0],&got)==KERN_SUCCESS &&
-     vm_read_overwrite(mach_task_self(),ctx+0xb3c,4,(vm_address_t)&flags[1],&got)==KERN_SUCCESS) {
-   snprintf(item,sizeof item," ctx=%x/%x",flags[0],flags[1]);out+=item;
-  } else out+=" ctx=?";
- }
- static auto global=(uint32_t (*)(void))dlsym(RTLD_DEFAULT,"CARenderGetGlobalFeatureFlags");
- snprintf(item,sizeof item," global=%x",global?global():0xffffffffu);out+=item;
- if(header) {
-  const uintptr_t options=header+(0x1f491b3c5ull-0x189429000ull);
-  Dl_info info{};
-  if(dladdr((void *)options,&info) && info.dli_fname && strstr(info.dli_fname,"/QuartzCore") && (uintptr_t)info.dli_fbase==header) {
-   const volatile uint8_t *b=(const volatile uint8_t *)options;
-   snprintf(item,sizeof item," dbg=%u%u%u",b[0],b[1],b[2]);out+=item;
-  } else out+=" dbg=?";
- }
- return out;
-}
-// What a creation cost beyond its wall time (int-156: a translation the host does in 6 ms took 665 ms on the tablet, whose single core is
-// as fast): this thread's CPU time (user and system, microseconds) and the task's page faults, page-ins and context switches. A creation
-// whose CPU time is near its wall time computed; one whose faults are many paid the 4 KiB fault path; one far below it waited.
-struct NBCost {
- uint64_t user=0,system=0;int64_t faults=0,pageins=0,switches=0;
- static NBCost now() {
-  NBCost c;thread_basic_info_data_t t{};mach_msg_type_number_t n=THREAD_BASIC_INFO_COUNT;mach_port_t self=mach_thread_self();
-  if(thread_info(self,THREAD_BASIC_INFO,(thread_info_t)&t,&n)==KERN_SUCCESS) {
-   c.user=(uint64_t)t.user_time.seconds*1000000+t.user_time.microseconds;c.system=(uint64_t)t.system_time.seconds*1000000+t.system_time.microseconds;
-  }
-  mach_port_deallocate(mach_task_self(),self);
-  task_events_info_data_t e{};n=TASK_EVENTS_INFO_COUNT;
-  if(task_info(mach_task_self(),TASK_EVENTS_INFO,(task_info_t)&e,&n)==KERN_SUCCESS){c.faults=e.faults;c.pageins=e.pageins;c.switches=e.csw;}
-  return c;
- }
- std::string since(const NBCost &b) const {
-  char text[128];snprintf(text,sizeof text," cpu=%llu sys=%llu flt=%lld pin=%lld csw=%lld",(unsigned long long)(user+system-b.user-b.system),
-      (unsigned long long)(system-b.system),(long long)(faults-b.faults),(long long)(pageins-b.pageins),(long long)(switches-b.switches));
-  return text;
- }
-};
-// One journal line of a render pipeline creation begun at `began` (microseconds), `refused` its refusal or null. The label is the
-// caller's name for the pipeline (QuartzCore's: its spec's encoded name).
-static void journalRenderPipeline(MTLRenderPipelineDescriptor *d,uint64_t began,const char *refused,const std::string &cost) {
- if(gJournalPath.empty())return;
- const uint64_t ended=nowUs();uint64_t tid=0;pthread_threadid_np(nullptr,&tid);
- char head[256];
- snprintf(head,sizeof head,"R t=%llu tid=%llu main=%d us=%llu ok=%d samples=%lu topo=%lu ds=%lu/%lu",(unsigned long long)((began-gJournalBegan)/1000),
-     (unsigned long long)tid,pthread_main_np(),(unsigned long long)(ended-began),refused?0:1,(unsigned long)d.rasterSampleCount,
-     (unsigned long)d.inputPrimitiveTopology,(unsigned long)d.depthAttachmentPixelFormat,(unsigned long)d.stencilAttachmentPixelFormat);
- std::string line=head;
- line+=cost;
- line+=" label=";line+=d.label.length?d.label.UTF8String:"-";
- for(unsigned i=0;i<8;i++) {
-  MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];if(a.pixelFormat==MTLPixelFormatInvalid)continue;
-  snprintf(head,sizeof head," c%u=%lu:%lu:%d:%lu:%lu:%lu:%lu:%lu:%lu",i,(unsigned long)a.pixelFormat,(unsigned long)a.writeMask,(int)a.blendingEnabled,
-      (unsigned long)a.sourceRGBBlendFactor,(unsigned long)a.destinationRGBBlendFactor,(unsigned long)a.rgbBlendOperation,(unsigned long)a.sourceAlphaBlendFactor,
-      (unsigned long)a.destinationAlphaBlendFactor,(unsigned long)a.alphaBlendOperation);
-  line+=head;
- }
- if(MTLVertexDescriptor *v=d.vertexDescriptor)for(unsigned i=0;i<31;i++) {
-  MTLVertexAttributeDescriptor *a=v.attributes[i];if(a.format==MTLVertexFormatInvalid)continue;
-  MTLVertexBufferLayoutDescriptor *l=v.layouts[a.bufferIndex<31?a.bufferIndex:0];
-  snprintf(head,sizeof head," a%u=%lu:%lu:%lu:%lu:%lu:%lu",i,(unsigned long)a.format,(unsigned long)a.offset,(unsigned long)a.bufferIndex,(unsigned long)l.stride,
-      (unsigned long)l.stepFunction,(unsigned long)l.stepRate);
-  line+=head;
- }
- NBFunction *vf=[(id)d.vertexFunction isKindOfClass:[NBFunction class]]?(NBFunction *)d.vertexFunction:nil;
- NBFunction *ff=[(id)d.fragmentFunction isKindOfClass:[NBFunction class]]?(NBFunction *)d.fragmentFunction:nil;
- line+=" | v ";line+=vf?vf.name.UTF8String:"-";line+=" ";line+=vf?vf.constantsText:"";
- line+=" | f ";line+=ff?ff.name.UTF8String:"-";line+=" ";line+=ff?ff.constantsText:"";
- if(refused){line+=" | refused ";line+=refused;}
- line+=" | ";line+=quartzCoreCallers();
- for(char &c:line)if(c=='\n')c=' ';
- journal(line);
-}
 // A render pipeline descriptor in the bridge's form; false, with the error, for a function of another device.
 static bool renderDescriptor(MTLRenderPipelineDescriptor *d,NmbRenderPipelineDescriptor *p,NSError **error) {
  if(![(id)d.vertexFunction isKindOfClass:[NBFunction class]] || (d.fragmentFunction && ![(id)d.fragmentFunction isKindOfClass:[NBFunction class]])) {
@@ -1445,9 +1320,8 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
  std::vector<NmbBinaryArchive *> archives;
  if(!pipelineArchives(d.binaryArchives,archives,error)){delete p;return nil;}
  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
- const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
+ const uint64_t pipelineBegan=nowUs();
  NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
- journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
  if(!handle)return failWith<id<MTLRenderPipelineState>>(error,@"render pipeline",nil);
  NBRenderPipeline *state=[NBRenderPipeline new];state.handle=handle;gPipelines++;if(error)*error=nil;return (id<MTLRenderPipelineState>)state;
 }
@@ -1544,11 +1418,7 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
  gMissing=missing;gInFlight=[NSMutableSet set];
  gDevice=nmb_device_open(loader,cache);
  if(!gDevice){NBLOG(@"native-metal: device refused: %s",nmb_last_error());return nil;}
- if(cache){gJournalPath=std::string(cache)+"/pipelines.log";gJournalBegan=nowUs();}
  char name[128]={};nmb_device_name(gDevice,name,sizeof name);gName=[NSString stringWithUTF8String:name];gRegistryID=registryID;
- // The target families supportsFamily: answers true, with the rows of Apple's tables the device does not meet in them (nmb_device_family_waivers).
- {char waived[4096]={};nmb_device_family_waivers(gDevice,waived,sizeof waived);
-  for(char *line=waived,*next;*line;line=next){next=strchr(line,'\n');if(next)*next++=0;else next=line+strlen(line);journal(std::string("F ")+line);}}
  Class base=objc_getClass("_MTLDevice");
 #if !TARGET_OS_IPHONE
  // Host instrument: on NSObject every selector a client sends that this file lacks reaches the missing hook, instead of the host's
@@ -1556,8 +1426,8 @@ extern "C" id native_bridge_metal_open(const char *loader,const char *cache,uint
  if(getenv("NMB_DEVICE_BASE_NSOBJECT"))base=[NSObject class];
 #endif
 #if TARGET_OS_IPHONE
- // The target's base class ABI (iPadOS 17.7.11): the dynamic subclass adds no instance variables.
- if(!base || class_getInstanceSize(base)!=536){NBLOG(@"native-metal: unexpected _MTLDevice ABI");return nil;}
+ // The dynamic subclass adds no instance variables or private-layout accesses.
+ if(!base || class_getInstanceSize(base)<class_getInstanceSize([NSObject class])){NBLOG(@"native-metal: unexpected _MTLDevice ABI");return nil;}
 #endif
  if(!base)base=[NSObject class];
  Class cls=objc_allocateClassPair(base,"NativeBridgeMetalDevice",0);if(!cls)return nil;
@@ -1596,154 +1466,6 @@ static size_t native_bridge_metal_formats_locked(char *out,size_t size) {
  for(unsigned i=0;i<gFormatCount && n>0 && (size_t)n<size;i++)n+=snprintf(out+n,size-(size_t)n,"%u ",gFormats[i]);
  return n>0?(size_t)n:0;
 }
-// The benchmark's rows (native_bridge_metal_benchmark), kept for the telemetry table.
-static std::mutex gBenchLock;
-static char gBench[4][96];
-static std::atomic<unsigned> gBenchRuns;
-extern "C" size_t native_bridge_metal_benchmark(id device,const char *metallib,unsigned pairs,char *out,size_t size) {
- auto now=[]{return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);};
- // the first run fills rows 0-1 (Y, Y1), a later one rows 2-3 (Z, Z1), so a busy and an idle run are both kept
- const unsigned base=gBenchRuns++?2u:0u;
- auto put=[&](unsigned row,const char *format,auto... args){std::lock_guard<std::mutex> lock(gBenchLock);snprintf(gBench[base+row],sizeof gBench[base+row],format,args...);
-  if(base)gBench[base+row][0]='Z';};
- // compute: a dependent integer chain (no memory), 100M steps
- uint64_t t=now(),x=0x9e3779b97f4a7c15ull;
- for(uint32_t i=0;i<100000000u;i++){x^=x<<13;x^=x>>7;x^=x<<17;}
- const uint64_t computeUs=(now()-t)/1000;
- // first touch: 32 MiB of fresh anonymous memory (the tablet's free memory is small), one store per 4 KiB page (the kernel's fault and zero-fill), then four memsets of it
- const size_t bytes=32u<<20;
- uint64_t faultUs=0,fillUs=0,shaUs=0;
- void *m=mmap(nullptr,bytes,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
- if(m!=MAP_FAILED) {
-  volatile uint8_t *b=(volatile uint8_t *)m;
-  t=now();for(size_t at=0;at<bytes;at+=4096)b[at]=1;faultUs=(now()-t)/1000;
-  t=now();for(int k=0;k<4;k++)memset(m,k,bytes);fillUs=(now()-t)/1000;
-  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-  t=now();CC_SHA256(m,(CC_LONG)(16u<<20),digest);shaUs=(now()-t)/1000;
-  x^=digest[0];
-  munmap(m,bytes);
- }
- put(0,"Y cpu=%llums(100M) fault=%lluus/32MiB=%lluns/pg fill=%lluMB/s sha=%lluMB/s %llx",(unsigned long long)(computeUs/1000),
-  (unsigned long long)faultUs,(unsigned long long)(faultUs*1000/8192),(unsigned long long)(fillUs?4ull*32*1000000/fillUs:0),
-  (unsigned long long)(shaUs?16ull*1000000/shaUs:0),(unsigned long long)(x&0xf));
- // pipelines: the host tool's pairs, in its order
- uint64_t made=0,refused=0,createUs=0,createMax=0,drawUs=0,drawMax=0,libraryUs=0;
- @autoreleasepool {
-  id<MTLDevice> dev=(id<MTLDevice>)device;NSError *error=nil;
-  t=now();
-  id<MTLLibrary> qc=metallib?[dev newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error]:nil;
-  libraryUs=(now()-t)/1000;
-  if(qc) {
-   NSArray<NSString *> *names=qc.functionNames;
-   id<MTLCommandQueue> queue=[dev newCommandQueue];
-   MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:64 height:64 mipmapped:NO];
-   td.usage=MTLTextureUsageRenderTarget;
-   id<MTLTexture> target=[dev newTextureWithDescriptor:td];
-   id<MTLBuffer> zeros=[dev newBufferWithLength:65536 options:MTLResourceStorageModeShared];
-   unsigned n=0;
-   for(NSString *name in names) {
-    if(n>=pairs)break;
-    id<MTLFunction> f=[qc newFunctionWithName:name];
-    if(f.functionType!=MTLFunctionTypeVertex)continue;
-    NSString *fragmentName=[name stringByReplacingOccurrencesOfString:@"_vert_" withString:@"_frag_"];
-    if([fragmentName isEqualToString:name] || ![names containsObject:fragmentName])continue;
-    ++n;
-    MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
-    d.vertexFunction=f;d.fragmentFunction=[qc newFunctionWithName:fragmentName];
-    d.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
-    t=now();
-    id<MTLRenderPipelineState> state=[dev newRenderPipelineStateWithDescriptor:d error:&error];
-    const uint64_t took=(now()-t)/1000;
-    if(!state){++refused;continue;}
-    ++made;createUs+=took;createMax=std::max(createMax,took);
-    t=now();
-    MTLRenderPassDescriptor *pass=[MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture=target;pass.colorAttachments[0].loadAction=MTLLoadActionClear;pass.colorAttachments[0].storeAction=MTLStoreActionStore;
-    id<MTLCommandBuffer> commands=[queue commandBuffer];
-    id<MTLRenderCommandEncoder> encoder=[commands renderCommandEncoderWithDescriptor:pass];
-    [encoder setRenderPipelineState:state];
-    for(NSUInteger i=0;i<8;++i){[encoder setVertexBuffer:zeros offset:0 atIndex:i];[encoder setFragmentBuffer:zeros offset:0 atIndex:i];}
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [encoder endEncoding];[commands commit];[commands waitUntilCompleted];
-    const uint64_t drew=(now()-t)/1000;
-    drawUs+=drew;drawMax=std::max(drawMax,drew);
-   }
-  }
- }
- put(1,"Y1 qc lib=%llums made=%llu refused=%llu create=%llums max=%llums draw=%llums max=%llums",(unsigned long long)(libraryUs/1000),
-  (unsigned long long)made,(unsigned long long)refused,(unsigned long long)(createUs/1000),(unsigned long long)(createMax/1000),
-  (unsigned long long)(drawUs/1000),(unsigned long long)(drawMax/1000));
- size_t at=0;
- if(out && size) {
-  std::lock_guard<std::mutex> lock(gBenchLock);
-  out[0]=0;for(unsigned r=base;r<base+2;r++)at+=(size_t)snprintf(out+at,size>at?size-at:0,"%s\n",gBench[r]);
- }
- return at;
-}
-// The telemetry table the plugin streams to the kernel's log: newline-separated rows of at most 90 characters.
-extern "C" size_t native_bridge_metal_telemetry(char *out,size_t size) {
- size_t at=0;out[0]=0;
- auto row=[&](const char *format,auto... args){
-  char text[200];int n=snprintf(text,sizeof text,format,args...);if(n<=0)return;if(n>90)n=90;
-  if(at+(size_t)n+2>=size)return;memcpy(out+at,text,(size_t)n);at+=(size_t)n;out[at++]='\n';out[at]=0;};
- auto ms=[](uint64_t us){return (unsigned long long)(us/1000);};
- {std::lock_guard<std::mutex> lock(gBenchLock);for(unsigned r=0;r<4;r++)if(gBench[r][0])row("%.90s",gBench[r]);}
- row("S c%llu/%llu d%llu p%llu x%llu R%llu D%llu F%llu M%lluk C%llu B%llu",(unsigned long long)gCommits.load(),(unsigned long long)gCommitFailures.load(),
-  (unsigned long long)gCompleted.load(),(unsigned long long)gPipelines.load(),(unsigned long long)gProblems.load(),(unsigned long long)gPasses.load(),
-  (unsigned long long)gDraws.load(),(unsigned long long)gFullScreenPasses.load(),(unsigned long long)(gBiggestPass.load()>>10),
-  (unsigned long long)gDispatches.load(),(unsigned long long)gBlits.load());
- row("T pipeline n=%llu total=%llums max=%llums",(unsigned long long)gTimePipeline.count.load(),ms(gTimePipeline.total.load()),ms(gTimePipeline.slowest.load()));
- row("T library n=%llu total=%llums max=%llums",(unsigned long long)gTimeLibrary.count.load(),ms(gTimeLibrary.total.load()),ms(gTimeLibrary.slowest.load()));
- row("T function n=%llu total=%llums max=%llums",
-  (unsigned long long)gTimeFunction.count.load(),ms(gTimeFunction.total.load()),ms(gTimeFunction.slowest.load()));
- row("G commit-to-complete n=%llu total=%llums max=%llums mean=%lluus",(unsigned long long)gTimeEncodeToCommit.count.load(),ms(gTimeEncodeToCommit.total.load()),
-  ms(gTimeEncodeToCommit.slowest.load()),(unsigned long long)(gTimeEncodeToCommit.count.load()?gTimeEncodeToCommit.total.load()/gTimeEncodeToCommit.count.load():0));
- row("J scheduled wait n=%llu total=%llums max=%llums",(unsigned long long)gTimeWaitScheduled.count.load(),ms(gTimeWaitScheduled.total.load()),ms(gTimeWaitScheduled.slowest.load()));
- row("J completed wait n=%llu total=%llums max=%llums",(unsigned long long)gTimeWaitCompleted.count.load(),ms(gTimeWaitCompleted.total.load()),ms(gTimeWaitCompleted.slowest.load()));
- row("J resource wait n=%llu total=%llums max=%llums",(unsigned long long)gTimeResourceWait.count.load(),ms(gTimeResourceWait.total.load()),ms(gTimeResourceWait.slowest.load()));
- row("J resource checks=%llu skipped=%llu",(unsigned long long)gResourceChecks.load(),(unsigned long long)gResourceSkipped.load());
- row("J surface cache n=%llu bytes=%llu dup=%llu us=%llu max=%llu",(unsigned long long)gTimeSurfaceFlush.count.load(),
-  (unsigned long long)gSurfaceFlushBytes.load(),(unsigned long long)gSurfaceFlushDuplicates.load(),
-  (unsigned long long)gTimeSurfaceFlush.total.load(),(unsigned long long)gTimeSurfaceFlush.slowest.load());
- row("N no-copy %llu dealloc %llu/%llu surface %llu/%llu",(unsigned long long)gNoCopyAll.load(),(unsigned long long)gNoCopyReleased.load(),
-  (unsigned long long)gNoCopyMade.load(),
-  (unsigned long long)gSurfaceImportsReleased.load(),(unsigned long long)gSurfaceImportsMade.load());
- // The runtime's VkPipeline makings (the creation log, METAL2VULKAN_LOG_PIPELINES; they happen at draws, not at the state's creation) and
- // its shader cache: where the driver's compile time goes.
- uint64_t work[10]={};
- if(gDevice && nmb_device_work_stats(gDevice,work)) {
-  row("V vkpipe n=%llu total=%llums max=%llums waited=%llums failed=%llu",
-   (unsigned long long)work[0],ms(work[1]),ms(work[2]),ms(work[3]),(unsigned long long)work[4]);
-  row("V cache hit%llu miss%llu wr%llu | msg i%llu w%llu",(unsigned long long)work[7],(unsigned long long)work[8],(unsigned long long)work[9],(unsigned long long)work[5],
-   (unsigned long long)work[6]);
-  char warning[200];size_t n=nmb_last_warning(warning,sizeof warning);
-  if(n){row("W %.86s",warning);if(n>86)row("Wb %.86s",warning+86);}
- }
- {
-  std::lock_guard<std::mutex> lock(gProblemLock);
-  char formats[160];native_bridge_metal_formats_locked(formats,sizeof formats);row("F %.86s",formats);
-  const SurfaceRefusal &r=gSurfaceLastRefusal;
-  if(r.step)row("SR %u %08x %c%c%c%c pl%u/%u o%llx rb%llu a%llx %llux%llu pf%u",r.step,r.format,(char)(r.format>>24),(char)(r.format>>16),(char)(r.format>>8),
-   (char)r.format,r.plane,r.planes,(unsigned long long)r.offset,(unsigned long long)r.row,(unsigned long long)r.allocation,(unsigned long long)r.width,
-   (unsigned long long)r.height,r.pixelFormat);
-  row("P0 %.86s",gLastProblems[0]);row("P0b %.86s",strlen(gLastProblems[0])>86?gLastProblems[0]+86:"");
-  row("P1 %.86s",gLastProblems[1]);row("P1b %.86s",strlen(gLastProblems[1])>86?gLastProblems[1]+86:"");
- }
- {
-  std::lock_guard<std::mutex> lock(gCommitLock);
-  const uint32_t newest=(uint32_t)gCommits.load();
-  row("%s","Q timing v2: per-buffer API counts; ctc=commit-to-callback; age includes caller idle");
-  for(uint32_t k=0;k<20 && k<newest;k++) {
-   const CommitRecord &r=gCommitRing[(newest-k)%32];
-   if(r.index!=newest-k)continue;
-   row("K%u t=%llu.%03llus rp%u dr%u kpx%llu cs%u bl%u ctc=%lluus",r.index,(unsigned long long)(r.committedUs/1000000),(unsigned long long)((r.committedUs/1000)%1000),
-    r.work.passes,r.work.draws,(unsigned long long)(r.work.pixels>>10),r.work.dispatches,r.work.blits,(unsigned long long)r.callbackUs);
-   if(k<4)row("E%u age=%lluus scheduled=%lldus",r.index,(unsigned long long)r.ageUs,(long long)r.scheduledUs);
-  }
- }
- return at;
-}
-
 extern "C" size_t native_bridge_metal_formats(char *out,size_t size) {
  std::lock_guard<std::mutex> lock(gProblemLock);
  return native_bridge_metal_formats_locked(out,size);

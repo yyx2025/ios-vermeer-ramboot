@@ -23,7 +23,15 @@ jobs:
           mkdir prior-tree
           tar xzf prior-buildtree/buildtree.tgz -C prior-tree
       - name: Compile GPU startup, display delivery and network interface
-        run: python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
+        run: |
+          brew install llvm
+          python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
+      - name: Check MHI DMA alignment and retained ownership
+        if: always()
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/wifi_dma_host.c gpu-full/K70/K70WifiDma.c -o wifi-dma
+          ./wifi-dma 4096
+          ./wifi-dma 16384
       - name: Check display ownership with sanitizers
         if: always()
         run: |

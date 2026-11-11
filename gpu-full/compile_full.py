@@ -30,6 +30,7 @@ units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c',
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
 units+=[W/'Sm8550Platform/ShengGmu.c',W/'Sm8550Platform/ShengGmuCommandDb.c',W/'K70/ShengGmuVotes.c',W/'K70/K70GpuStartup.cpp']
 units+=[W/'K70/K70GpuCp.cpp',W/'K70/K70GpuZap.c']
+units+=[W/'K70/K70GpuBoot.cpp']
 units+=[W/'K70Display/K70FrameHandoff.cpp',W/'K70Display/SweetFramebuffer.cpp']
 assert len({p.stem for p in units})==len(units)
 def compile_one(source):
@@ -51,11 +52,17 @@ for row in rows:
 print('Actual Apple kernel compilation:',report['passing_units'],'/',len(rows),flush=True)
 if any(row['exit_code'] for row in rows):raise SystemExit(1)
 archive=OUT/'libAdreno740-iOS16.a'
-gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70Display/SweetFramebuffer.cpp',page)]
+archive.unlink(missing_ok=True)
+# Load the original parent before the derived accelerator's initializer.
+llvm=Path(subprocess.check_output(['brew','--prefix','llvm'],text=True).strip())/'bin/llvm-objcopy'
+late=OUT/'NativeAdrenoAccelerator.late.o'
+subprocess.run([llvm,'--remove-section=__DATA,__mod_init_func',
+    '--globalize-symbol=__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp',OUT/'NativeAdrenoAccelerator.o',late],check=True)
+gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70Display/SweetFramebuffer.cpp',W/'Adreno740/NativeAdrenoAccelerator.cpp',page)]+[late]
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
 symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
 required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
-    'NativeAdrenoGmuContextBringup','NativeAdrenoGpuContextBringup','k70_gpu_prepare_gmu','k70_gpu_start_execution','k70_gpu_execution')
+    'NativeAdrenoGmuContextBringup','NativeAdrenoGpuContextBringup','k70_gpu_prepare_gmu','k70_gpu_start_execution','k70_gpu_execution','k70_gpu_boot')
 for symbol in required_symbols:
     assert ' T _'+symbol in symbols,'Actual startup definition missing: '+symbol
 report['required_startup_definitions']=list(required_symbols)

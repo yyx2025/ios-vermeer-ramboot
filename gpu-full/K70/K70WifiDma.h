@@ -19,6 +19,8 @@ struct K70WifiDmaArena {
  * until the endpoint is stopped and its SMMU translations are retired. */
 int k70_wifi_dma_init(struct K70WifiDmaArena *,void *cpu,uint64_t bus,size_t bytes,
     size_t page,void *cookie,int (*sync_owned)(void *,void *,size_t,int));
+/* Bus address is aligned to the next power of two of max(requested,page), as
+ * required by MHI image download; padding stays free and is never published. */
 void *k70_wifi_dma_alloc(struct K70WifiDmaArena *,size_t requested,uint64_t *bus);
 /* Zero size and bus are the nw_abi lx_dma_kfree convention: resolve the exact
  * allocation from its base. The caller proves the device no longer uses it.
