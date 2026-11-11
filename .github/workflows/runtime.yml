@@ -1,0 +1,28 @@
+name: K70 v11 iOS16 full graphics runtime
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: brew install llvm bison glslang ninja
+      - name: Build real iOS16 Metal bridge, Turnip and frame shader
+        run: python3 gpu-runtime/build_runtime.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k70-v11-runtime
+          path: |
+            gpu-runtime/build/NativeAdrenoMetal.bundle
+            gpu-runtime/build/runtime-report.json
+            gpu-runtime/build/native-metal-bridge/*.log
+            gpu-runtime/.cache/*-ios-*.log
+            gpu-runtime/build/mesa-tu-ios/builtin-build-profile.json
+          retention-days: 7
