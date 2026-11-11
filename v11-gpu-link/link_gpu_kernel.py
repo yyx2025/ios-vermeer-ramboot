@@ -49,7 +49,7 @@ for role,row in C['firmware'].items():
                '.p2align 3','.globl '+symbol+'_size',symbol+'_size:', '.quad '+str(row['bytes'])]
 fw=OUT/'FirmwareInsertionSlots.S'
 fw.write_text('\n'.join(firmware)+'\n')
-subprocess.run(['xcrun','clang','-target','arm64-apple-ios16','-c',str(fw),'-o',str(fw.with_suffix('.o'))],check=True)
+subprocess.run(['xcrun','clang','-target','arm64-apple-macos14','-c',str(fw),'-o',str(fw.with_suffix('.o'))],check=True)
 
 def runtime_end(path):
     raw=path.read_bytes()
@@ -73,7 +73,7 @@ for attempt in range(3):
     bindings=OUT/'OriginalParentBindings.S'
     bindings.write_text(''.join('.globl '+name+'\n.set '+name+', '+hex(value+slide)+'\n'
         for name,value in sorted(C['parent_symbols'].items())))
-    subprocess.run(['xcrun','clang','-target','arm64-apple-ios16','-c',str(bindings),
+    subprocess.run(['xcrun','clang','-target','arm64-apple-macos14','-c',str(bindings),
         '-o',str(bindings.with_suffix('.o'))],check=True)
     unstripped=OUT/('kernel.pass'+str(attempt)+'.unstripped')
     args=[t.replace('@XNU_BUILD@',str(X)).replace('@LINK_OUTPUT@',str(unstripped)) for t in recipe]

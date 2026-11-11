@@ -217,6 +217,21 @@ jobs:
             python3 tools/check_ios_kernel.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
           fi
 
+      - name: Preserve actual kernel link inputs for further links
+        if: always()
+        run: |
+          if test -d dxb/build/xnu.obj; then
+            tar czf link-inputs.tgz -C dxb build/xnu.obj fakeroot/usr/local/lib/kernel
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xnu-link-inputs
+          path: link-inputs.tgz
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Package build tree for local compiles
         if: always()
         run: |
