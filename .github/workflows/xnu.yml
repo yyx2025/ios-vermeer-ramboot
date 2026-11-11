@@ -1,48 +1,28 @@
-name: K70 v11 GPU display and Wi-Fi integration
+name: K70 v11 iOS16 full graphics runtime
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
-  compile:
+  runtime:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: xnu-buildtree
-          path: prior-buildtree
-          run-id: 42750699047
-          github-token: ${{ github.token }}
-      - name: Extract retained XNU8796 build tree
-        run: |
-          mkdir prior-tree
-          tar xzf prior-buildtree/buildtree.tgz -C prior-tree
-      - name: Compile GPU startup, display delivery and network interface
-        run: python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
-      - name: Check display ownership with sanitizers
-        if: always()
-        run: |
-          for page in 4096 16384; do
-            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -DSWEET -Igpu-full/tests/display_mock -Igpu-full/K70Display gpu-full/tests/k70_display_test.cpp -o display-$page
-            for scenario in snapshot timeout unconfirmed_success completion precommit map_failure bad_map allocation_failure replace cpu_arm_race swap_end sequence_exhaustion; do
-              ASAN_OPTIONS=detect_leaks=0 ./display-$page "$scenario"
-            done
-          done
-      - name: Compile the frontend using the iOS SDK
-        if: always()
-        run: python3 gpu-full/compile_metal.py
+      - name: Install build dependencies
+        run: brew install llvm bison glslang ninja
+      - name: Build real iOS16 Metal bridge, Turnip and frame shader
+        run: python3 gpu-runtime/build_runtime.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: k70-v11-integration
+          name: k70-v11-runtime
           path: |
-            gpu-full/full-compile.json
-            gpu-full/full-objects
-            gpu-full/metal-compile.json
-            gpu-full/metal-objects
+            gpu-runtime/build/NativeAdrenoMetal.bundle
+            gpu-runtime/build/runtime-report.json
+            gpu-runtime/build/native-metal-bridge/*.log
+            gpu-runtime/.cache/*-ios-*.log
+            gpu-runtime/build/mesa-tu-ios/builtin-build-profile.json
           retention-days: 7
