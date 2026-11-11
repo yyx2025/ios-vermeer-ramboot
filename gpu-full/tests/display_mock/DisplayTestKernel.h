@@ -29,7 +29,7 @@ using UInt32=uint32_t;using task_t=void *;using mach_port_t=uint32_t;
 using mach_port_name_t=uint32_t;using io_user_reference_t=uint64_t;using mach_vm_address_t=uint64_t;
 inline task_t kernel_task=(void *)1;
 #define TASK_NULL nullptr
-enum {kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNoMemory=2,kIOReturnNotReady=3,kIOReturnTimeout=4};
+enum {kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnNoMemory=2,kIOReturnNotReady=3,kIOReturnTimeout=4,kIOReturnBusy=5};
 enum {kIODirectionInOut=3,kIOMemoryKernelUserShared=4,kIOMapAnywhere=8,kIOMapReadOnly=16};
 enum {THREAD_UNINT=0,THREAD_TIMED_OUT=1,kMillisecondScale=1000000,MACH_PORT_NULL=0,kIOUserNotifyOptionCanDrop=1};
 inline int test_allocation_fail_after=-1,test_map_fail_after=-1,test_live_descriptors=0,test_live_maps=0;

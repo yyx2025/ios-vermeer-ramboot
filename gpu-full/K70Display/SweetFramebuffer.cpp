@@ -50,6 +50,9 @@ extern "C" int vermeer_console_muted;
 #include "vermeer_frame_scale.h"
 #include "K70FrameHandoff.h"
 extern "C" void vermeer_debug_frame_register(void (*)(void));
+#if defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI
+extern "C" IOReturn k70_gpu_start_worker(void);
+#endif
 
 enum {
 	kSweetFBGetLayerDefaultSurface  = 3,
@@ -216,6 +219,11 @@ AppleCLCD::start(IOService *provider)
 	/* Handoff remains inactive until the real Metal presenter is ready. */
 	if (k70_frame_register(fSurface->memory,fPhys,fWidth,fHeight,fRowBytes)!=kIOReturnSuccess) return false;
 	registerService();
+#if defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI
+	const IOReturn gpuStart=k70_gpu_start_worker();
+	if(gpuStart!=kIOReturnSuccess && gpuStart!=kIOReturnBusy)
+		IOLog("K70 GPU: could not schedule startup, status 0x%x\n",gpuStart);
+#endif
 	vermeer_debug_frame_register(vermeer_frame_status);
 	IOLog("VERMEER FB: logical default surface %u 1125x2436; physical scanout separate v8\n", fCanvas->id);
 	IOLog("VERMEER FB: retained pending frame ownership enabled\n");

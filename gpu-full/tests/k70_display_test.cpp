@@ -4,6 +4,8 @@
 extern "C" {int vermeer_console_muted=1;}
 extern "C" void proc_selfname(char *out,int n){std::snprintf(out,(size_t)n,"%s",test_allowed?"backboardd":"other");}
 extern "C" void vermeer_debug_frame_register(void (*)(void)){}
+static unsigned test_gpu_start_calls;
+extern "C" IOReturn k70_gpu_start_worker(void){++test_gpu_start_calls;return kIOReturnSuccess;}
 /* Compile the production implementations, including the SwapEnd caller. */
 #include "../K70Display/K70FrameHandoff.cpp"
 #include "../K70Display/SweetFramebuffer.cpp"
@@ -130,7 +132,8 @@ static void sequenceExhaustion() {
 }
 static void put32(uint8_t *rec,size_t offset,uint32_t value){std::memcpy(rec+offset,&value,4);}
 static void swapEndCapture() {
-    auto *fb=new AppleCLCD{};CHECK(fb->start(nullptr));CHECK(armOwner()==0);
+    auto *fb=new AppleCLCD{};CHECK(fb->start(nullptr));
+    CHECK(test_gpu_start_calls==1);CHECK(armOwner()==0);
     auto *source=(uint8_t *)fb->fCanvas->memory->getBytesNoCopy();std::memset(source,0x73,fb->fCanvas->allocSize);
     uint8_t rec[SWEET_FB_SWAP_REC_SIZE]{};put32(rec,0x54,fb->fCanvas->id);put32(rec,0x104,1);
     put32(rec,0xc4+8,1125);put32(rec,0xc4+12,2436);

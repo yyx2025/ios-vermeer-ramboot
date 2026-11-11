@@ -36,7 +36,7 @@ jobs:
         if: always()
         run: |
           for page in 4096 16384; do
-            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -DSWEET -Igpu-full/tests/display_mock -Igpu-full/K70Display gpu-full/tests/k70_display_test.cpp -o display-$page
+            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -DSWEET -DK70_IOS16_IOKIT_ABI=1 -Igpu-full/tests/display_mock -Igpu-full/K70Display gpu-full/tests/k70_display_test.cpp -o display-$page
             for scenario in snapshot timeout unconfirmed_success completion precommit map_failure bad_map allocation_failure replace cpu_arm_race swap_end sequence_exhaustion; do
               ASAN_OPTIONS=detect_leaks=0 ./display-$page "$scenario"
             done

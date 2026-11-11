@@ -47,6 +47,7 @@ units+=[W/'AdrenoPM4/AdrenoPM4.c']
 units+=[W/'Sm8550Platform/ShengGmu.c',W/'Sm8550Platform/ShengGmuCommandDb.c',W/'K70/ShengGmuVotes.c',W/'K70/K70GpuStartup.cpp']
 units+=[W/'K70/K70GpuCp.cpp',W/'K70/K70GpuZap.c']
 units+=[W/'K70/K70GpuBoot.cpp']
+if A.ios16_iokit_abi:units+=[W/'K70/K70GpuWorker.cpp']
 units+=[W/'K70Display/K70FrameHandoff.cpp',W/'K70Display/SweetFramebuffer.cpp']
 assert len({p.stem for p in units})==len(units)
 def compile_one(source):
