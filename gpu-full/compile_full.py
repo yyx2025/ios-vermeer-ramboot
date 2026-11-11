@@ -23,7 +23,7 @@ includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm
 required_headers=('ShengGmuSource.h','ShengGmuVotesSource.h','ShengGmuCommandDbSource.h','ShengGpuSmmuSource.h')
 for name in required_headers:
     assert any((path/name).is_file() for path in includes), 'Missing actual startup policy: '+name
-page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n'+''.join('#include "'+name+'"\n' for name in required_headers))
+page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\n#include "AdrenoHfiVotes.h"\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n'+''.join('#include "'+name+'"\n' for name in required_headers))
 units=list(sorted((W/'Adreno740').glob('*.cpp')))+[W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page]
 units+=list(sorted((W/'ArmSmmu4K').glob('ArmSmmu4K*.c')))
 units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c','AdrenoHfiVotes.c','AdrenoFirmware.c')]

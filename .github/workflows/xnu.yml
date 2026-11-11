@@ -25,7 +25,7 @@ jobs:
       - name: Verify actual GPU allocation and ownership functions
         run: |
           for page in 4096 16384; do
-            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -Igpu-full/tests/mock -Igpu-full/Adreno740 gpu-full/tests/gpu_memory_host.cpp -o memory-$page
+            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -Igpu-full/tests/mock -Igpu-full/Adreno740 -Igpu-full/ArmSmmu4K -Igpu-full/AdrenoFirmware gpu-full/tests/gpu_memory_host.cpp -o memory-$page
             ASAN_OPTIONS=detect_leaks=0 ./memory-$page
           done
       - name: Compile all GPU units, dependencies and Wi-Fi network interface

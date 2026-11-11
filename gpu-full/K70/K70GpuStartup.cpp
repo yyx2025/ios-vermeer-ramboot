@@ -16,6 +16,7 @@
 #include "ShengGmuCommandDbSource.h"
 #include "ShengGpuSmmuSource.h"
 #include <IOKit/IODeviceMemory.h>
+#include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <string.h>
 

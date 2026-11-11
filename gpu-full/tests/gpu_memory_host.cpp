@@ -10,6 +10,7 @@ uint64_t next_physical=UINT64_C(0x8c0000000);
 std::vector<NativeAdrenoPhysicalSpan> changed,maintained;
 size_t last_maintained_bytes=0;void *last_maintained_mapping=nullptr;
 bool restore_fails=false;
+int cache_change_fail_after=-1;
 IOReturn NativeAdrenoQueryCpuNative(NativeAdrenoCpuState *out) {*out={};out->kernel_page_bytes=test_page;return 0;}
 void NativeAdrenoPublishBarrier() {}
 IOReturn NativeAdrenoMaintainOwnedPages(void *p,size_t n,NativeAdrenoCacheOperation) {
@@ -21,6 +22,8 @@ IOReturn NativeAdrenoMaintainPhysicalPages(uint64_t p,size_t n,NativeAdrenoCache
 }
 IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *s,size_t count,bool wc) {
     if(!wc && restore_fails)return kIOReturnIOError;
+    if(wc && cache_change_fail_after==0)return kIOReturnIOError;
+    if(wc && cache_change_fail_after>0)--cache_change_fail_after;
     changed.clear();for(size_t i=0;i<count;++i) {CHECK(!((s[i].physical|s[i].bytes)&(test_page-1)));changed.push_back(s[i]);}
     return 0;
 }
@@ -28,6 +31,28 @@ IOReturn NativeAdrenoReassertWriteCombined(const NativeAdrenoPhysicalSpan *s,siz
     return NativeAdrenoSetPagesCacheMode(s,n,true);
 }
 #include "NativeAdrenoMemory.cpp"
+#include "NativeAdrenoGmuMemory.cpp"
+struct TestGmuMapping {uint64_t handle,iova;NativeAdrenoMemory *memory;};
+std::vector<TestGmuMapping> gmu_mappings;
+IOReturn NativeAdrenoVm::map(NativeAdrenoMemory *memory,unsigned upper,uint64_t iova,
+    unsigned,unsigned cache,unsigned,uint64_t *handle) {
+    CHECK(memory && memory->writeCombined() && !upper && !cache && handle);
+    CHECK(memory->ownedBytes()%test_page==0 && memory->bytes()%4096==0);
+    CHECK(memory->spanCount()==1 && memory->spans()[0].bytes==memory->bytes());
+    for(const auto &other:gmu_mappings) {
+        CHECK(iova>=other.iova+other.memory->bytes() || other.iova>=iova+memory->bytes());
+        const uint64_t a=other.memory->spans()[0].physical,b=memory->spans()[0].physical;
+        CHECK(a+other.memory->ownedBytes()<=b || b+memory->ownedBytes()<=a);
+    }
+    CHECK(memory->holdForDevice()==0);
+    *handle=gmu_mappings.size()+1;gmu_mappings.push_back({*handle,iova,memory});return 0;
+}
+IOReturn NativeAdrenoVm::unmap(uint64_t handle) {
+    for(auto i=gmu_mappings.begin();i!=gmu_mappings.end();++i)if(i->handle==handle) {
+        CHECK(i->memory->retireAfterQuiescence()==0);gmu_mappings.erase(i);return 0;
+    }
+    return kIOReturnBadArgument;
+}
 void freeTestPool() {
     CHECK(!pool.used);if(pool.descriptor) {complete_status=0;CHECK(pool.descriptor->complete()==0);pool.descriptor->release();}
     pool=Pool{};
@@ -88,6 +113,23 @@ int main() {
     CHECK(NativeAdrenoMemory::writeCombinePool()==0);
     CHECK(p.allocate(4096,40,false,test_page,true)==0 && p.makeWriteCombined()==0);
     CHECK(p.release()==0 && pool.write_combined && pool.used==0);freeTestPool();
+    {
+        // Real GMU allocator with a software VM boundary: validate CPU-owned
+        // page isolation, GPU extents and live DMA retention for the K70 sizes.
+        NativeAdrenoGmuAllocator gmu;NativeAdrenoVm vm;
+        CHECK(gmu.allocate(NativeAdrenoGmuDefaultSizes(1027*4096),40)==0);
+        CHECK(gmu.debug().bytes()==0x7000 && gmu.debug().ownedBytes()==(test_page==16384?0x8000:0x7000));
+        CHECK(gmu.mapInto(&vm)==0 && gmu_mappings.size()==5);
+        CHECK(gmu.icache().writeCombined() && gmu.hfi().writeCombined() && !gmu.tables().writeCombined());
+        CHECK(gmu.icache().release()==kIOReturnBusy && gmu.hfi().release()==kIOReturnBusy);
+        CHECK(gmu.unmapFrom(&vm)==0 && gmu_mappings.empty());
+        CHECK(gmu.release()==0 && live_descriptors==0);
+        CHECK(gmu.allocate(NativeAdrenoGmuDefaultSizes(1027*4096),40)==0);
+        cache_change_fail_after=2;
+        CHECK(gmu.mapInto(&vm)==kIOReturnIOError && gmu_mappings.empty());
+        cache_change_fail_after=-1;
+        CHECK(gmu.release()==0 && live_descriptors==0);
+    }
     NativeAdrenoMemory quarantined;
     CHECK(quarantined.allocate(4096,40,false,test_page)==0);complete_status=kIOReturnIOError;
     CHECK(quarantined.release()==kIOReturnIOError && quarantined.quarantined() && live_descriptors==1);
