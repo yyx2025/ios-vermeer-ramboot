@@ -19,6 +19,7 @@ jobs:
         if: always()
         with:
           name: k70-v11-runtime
+          include-hidden-files: true
           path: |
             gpu-runtime/build/NativeAdrenoMetal.bundle
             gpu-runtime/build/runtime-report.json
