@@ -29,6 +29,7 @@ units+=list(sorted((W/'ArmSmmu4K').glob('ArmSmmu4K*.c')))
 units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c','AdrenoHfiVotes.c','AdrenoFirmware.c')]
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
 units+=[W/'Sm8550Platform/ShengGmu.c',W/'Sm8550Platform/ShengGmuCommandDb.c',W/'K70/ShengGmuVotes.c',W/'K70/K70GpuStartup.cpp']
+units+=[W/'K70/K70GpuCp.cpp',W/'K70/K70GpuZap.c']
 assert len({p.stem for p in units})==len(units)
 def compile_one(source):
     compiler=shutil.which('clang++' if source.suffix=='.cpp' else 'clang')
@@ -53,7 +54,7 @@ gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K7
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
 symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
 required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
-    'NativeAdrenoGmuContextBringup','NativeAdrenoGpuContextBringup','k70_gpu_prepare_gmu')
+    'NativeAdrenoGmuContextBringup','NativeAdrenoGpuContextBringup','k70_gpu_prepare_gmu','k70_gpu_start_execution','k70_gpu_execution')
 for symbol in required_symbols:
     assert ' T _'+symbol in symbols,'Actual startup definition missing: '+symbol
 report['required_startup_definitions']=list(required_symbols)

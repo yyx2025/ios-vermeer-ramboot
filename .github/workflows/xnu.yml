@@ -34,6 +34,12 @@ jobs:
         run: |
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/GpuPowerBoardTests.c -o gpu-power-check
           ./gpu-power-check
+      - name: Verify K70 CP accesses and signed ZAP protocol
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/k70_zap_test.c gpu-full/K70/K70GpuZap.c -o zap-check
+          ./zap-check
+          clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/tests/mock -Igpu-full/K70 -Igpu-full/Adreno740 gpu-full/tests/k70_cp_test.cpp gpu-full/K70/K70GpuCp.cpp -o cp-check
+          ./cp-check
       - uses: actions/upload-artifact@v4
         if: always()
         with:

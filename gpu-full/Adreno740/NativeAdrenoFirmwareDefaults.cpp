@@ -8,3 +8,5 @@ extern "C" __attribute__((weak)) const uint8_t native_adreno_firmware_image[1]={
 extern "C" __attribute__((weak)) const uint64_t native_adreno_firmware_image_size=0;
 extern "C" __attribute__((weak)) const uint8_t native_adreno_sqe_firmware_image[1]={0};
 extern "C" __attribute__((weak)) const uint64_t native_adreno_sqe_firmware_image_size=0;
+extern "C" __attribute__((weak)) const uint8_t native_adreno_zap_image[1]={0};
+extern "C" __attribute__((weak)) const uint64_t native_adreno_zap_image_size=0;
