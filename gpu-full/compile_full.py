@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse,concurrent.futures,hashlib,json,os,shlex,shutil,subprocess
 
 P=argparse.ArgumentParser();P.add_argument('--xnu-root',type=Path,required=True)
+P.add_argument('--ios16-iokit-abi',action='store_true',help='Require the clean iOS16 ABI tree and apply its global flags to every unit')
 A=P.parse_args();W=Path(__file__).resolve().parent;X=A.xnu_root.resolve()
 OUT=W/'full-objects';OUT.mkdir(exist_ok=True)
 def input_identity():
@@ -27,6 +28,12 @@ def recipe(suffix):
         i+=1
     return result
 c=recipe('/bsd/dev/vermeer_usb_debug.c');cpp=recipe('/iokit/Kernel/arm/hid/SweetHID.cpp')
+abi_flags=[]
+if A.ios16_iokit_abi:
+    header=(X/'xnu/libkern/libkern/c++/OSMetaClass.h').read_text()
+    assert '(defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI)' in header, 'Unpatched IOKit ABI tree'
+    assert 'OTHER_CFLAGS += -DK70_IOS16_IOKIT_ABI=1 -DK70_NATIVE_RUNTIME_TRUST=1' in (X/'xnu/makedefs/MakeInc.def').read_text(), 'The kernel was not globally rebuilt with the same ABI'
+    abi_flags=['-DK70_IOS16_IOKIT_ABI=1','-DK70_NATIVE_RUNTIME_TRUST=1']
 includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','Ath12kWifi/include','K70','K70Display','generated/sheng-gmu','generated/sheng-gpu-smmu')]+[X/'xnu/osfmk']
 required_headers=('ShengGmuSource.h','ShengGmuVotesSource.h','ShengGmuCommandDbSource.h','ShengGpuSmmuSource.h')
 for name in required_headers:
@@ -45,7 +52,7 @@ assert len({p.stem for p in units})==len(units)
 def compile_one(source):
     compiler=shutil.which('clang++' if source.suffix=='.cpp' else 'clang')
     command=[compiler,'--target=arm64-apple-macos14',*(cpp if source.suffix=='.cpp' else c),
-        *[a for path in includes for a in ('-I',str(path))],'-Wno-error','-c',str(source),'-o',str(OUT/(source.stem+'.o'))]
+        *[a for path in includes for a in ('-I',str(path))],*abi_flags,'-Wno-error','-c',str(source),'-o',str(OUT/(source.stem+'.o'))]
     r=subprocess.run(command,cwd=X/'build/xnu.obj/DEVELOPMENT_ARM64_SWEET/iokit/DEVELOPMENT',capture_output=True,text=True)
     (OUT/(source.stem+'.log')).write_text(r.stdout+r.stderr)
     return {'source':source.relative_to(W).as_posix(),'sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -55,6 +62,7 @@ report={'profile':'iOS16/XNU8796 DEVELOPMENT_ARM64_SWEET, 16KiB CPU pages','chec
     'passing_units':sum(r['exit_code']==0 for r in rows),'total_units':len(rows),
     'actual_gmu_startup_compiled':True,'required_generated_policy':list(required_headers),
     'linked_to_boot_kernel':False,'hardware_verified':False,
+    'ios16_iokit_abi_requested':A.ios16_iokit_abi,'global_abi_flags':abi_flags,
     'input_files':inputs,'input_identity_sha256':hashlib.sha256(json.dumps(inputs,sort_keys=True).encode()).hexdigest()}
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')
 for row in rows:

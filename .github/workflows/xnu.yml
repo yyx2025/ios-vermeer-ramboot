@@ -16,7 +16,7 @@ jobs:
         with:
           name: xnu-buildtree
           path: prior-buildtree
-          run-id: 42750699047
+          run-id: 43067336014
           github-token: ${{ github.token }}
       - name: Extract retained XNU8796 build tree
         run: |
@@ -25,7 +25,7 @@ jobs:
       - name: Compile GPU startup, display delivery and network interface
         run: |
           brew install llvm
-          python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
+          python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree" --ios16-iokit-abi
       - name: Check MHI DMA alignment and retained ownership
         if: always()
         run: |
