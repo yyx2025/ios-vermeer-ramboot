@@ -104,7 +104,10 @@ int k70_wifi_qualify_selection(const K70WifiSelection *s) {
         for(size_t j=0;j<i;++j)if(!strcmp(f.request,s->files[j].request))return K70WifiInvalid;
         if(!fileHash(f))return K70WifiIntegrity;
     }
-    return (roles&0x1e)==0x1e?0:K70WifiMissing;
+    /* Pinned WCN7850 does not request auxiliary PHY ucode
+     * (download_aux_ucode=false). AMSS, calibration and regdb are required. */
+    const uint32_t required=(1u<<K70WifiAmss)|(1u<<K70WifiCalibration)|(1u<<K70WifiRegdb);
+    return (roles&required)==required?0:K70WifiMissing;
 }
 int k70_wifi_ram_get(const K70WifiSelection *s,const K70WifiIdentity *live,
     const char *request,const uint8_t **data,size_t *bytes) {

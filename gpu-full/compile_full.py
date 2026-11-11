@@ -39,8 +39,9 @@ required_headers=('ShengGmuSource.h','ShengGmuVotesSource.h','ShengGmuCommandDbS
 for name in required_headers:
     assert any((path/name).is_file() for path in includes), 'Missing actual startup policy: '+name
 page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\n#include "AdrenoHfiVotes.h"\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n'+''.join('#include "'+name+'"\n' for name in required_headers))
-units=list(sorted((W/'Adreno740').glob('*.cpp')))+[W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page]
-units+=[W/'K70/K70WifiStartup.cpp']
+wifi_units=[W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70/K70WifiStartup.cpp',
+    W/'K70/K70WifiNativePower.cpp',W/'K70/K70WifiNativeDma.cpp',W/'K70/K70WifiNativeIts.cpp']
+units=list(sorted((W/'Adreno740').glob('*.cpp')))+wifi_units+[page]
 units+=list(sorted((W/'ArmSmmu4K').glob('ArmSmmu4K*.c')))
 units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c','AdrenoHfiVotes.c','AdrenoFirmware.c')]
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
@@ -78,7 +79,7 @@ llvm=Path(subprocess.check_output(['brew','--prefix','llvm'],text=True).strip())
 late=OUT/'NativeAdrenoAccelerator.late.o'
 subprocess.run([llvm,'--remove-section=__DATA,__mod_init_func',
     '--globalize-symbol=__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp',OUT/'NativeAdrenoAccelerator.o',late],check=True)
-gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70/K70WifiStartup.cpp',W/'K70Display/SweetFramebuffer.cpp',W/'Adreno740/NativeAdrenoAccelerator.cpp',page)]+[late]
+gpu=[OUT/(s.stem+'.o') for s in units if s not in (*wifi_units,W/'K70Display/SweetFramebuffer.cpp',W/'Adreno740/NativeAdrenoAccelerator.cpp',page)]+[late]
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
 symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
 required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
@@ -88,6 +89,17 @@ for symbol in required_symbols:
 report['required_startup_definitions']=list(required_symbols)
 report['gpu_archive_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
 report['gpu_archive_bytes']=archive.stat().st_size
+wifi_archive=OUT/'libK70WifiNative-iOS16.a'
+wifi_archive.unlink(missing_ok=True)
+subprocess.run(['xcrun','ar','rcs',str(wifi_archive),*[str(OUT/(s.stem+'.o')) for s in wifi_units]],check=True)
+wifi_symbols=subprocess.check_output(['xcrun','nm','-g',str(wifi_archive)],text=True)
+required_wifi_symbols=('k70_wifi_startup','k70_wifi_dispatch','sheng_wifi_wake',
+    'k70_wifi_its_init','k70_wifi_its_handle_irq','k70_wifi_its_irq_hook_version')
+for symbol in required_wifi_symbols:
+    assert ' T _'+symbol in wifi_symbols,'Native Wi-Fi definition missing: '+symbol
+report['required_wifi_definitions']=list(required_wifi_symbols)
+report['wifi_archive_sha256']=hashlib.sha256(wifi_archive.read_bytes()).hexdigest()
+report['wifi_archive_bytes']=wifi_archive.stat().st_size
 report['object_files']={p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
                        for p in sorted(OUT.glob('*.o'))}
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')

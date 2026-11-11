@@ -98,6 +98,8 @@ static void preflight() {
     copy=selection;copy.files[1].role=1;assert(k70_wifi_qualify_selection(&copy)==K70WifiInvalid);
     copy=selection;strcpy(copy.files[1].request,"amss.bin");assert(k70_wifi_qualify_selection(&copy)==K70WifiInvalid);
     copy=selection;copy.count=3;assert(k70_wifi_qualify_selection(&copy)==K70WifiMissing);
+    copy=selection;copy.files[1]=copy.files[2];copy.files[2]=copy.files[3];copy.count=3;
+    assert(k70_wifi_qualify_selection(&copy)==0); /* WCN7850 never requests m3.bin. */
     copy=selection;strcpy(copy.files[0].source,"../amss.bin");assert(k70_wifi_qualify_selection(&copy)==K70WifiInvalid);
     const uint8_t *d=(const uint8_t*)1;size_t n=9;
     assert(k70_wifi_ram_get(&selection,nullptr,"board.bin",&d,&n)==K70WifiUnqualified&&!d&&!n);

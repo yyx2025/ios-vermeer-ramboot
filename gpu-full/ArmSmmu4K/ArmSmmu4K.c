@@ -25,12 +25,13 @@ static ArmSmmu4KStatus build_region(const ArmSmmu4KConfig *config,
     uint64_t pool = config->table_physical;
     if ((pool & 4095) || pool >= output_limit || pool_bytes > output_limit - pool)
         return ArmSmmu4KBadRange;
-    size_t leaves = 0;
+    size_t leaves = 0;unsigned device_memory = 0;
     uint64_t previous_end = 0;
     for (size_t i = 0; i < range_count; ++i) {
         const ArmSmmu4KRange *r = &ranges[i];
         if (!r->bytes || ((r->iova | r->physical | r->bytes) & 4095) ||
-            (!(r->permissions & ArmSmmu4KRead) || (r->permissions & ~15u)) || r->writeback > 1 || (r->shareability != 2 && r->shareability != 3) ||
+            (!(r->permissions & ArmSmmu4KRead) || (r->permissions & ~15u)) || r->writeback > ArmSmmu4KDeviceNGnRE || (r->shareability != 2 && r->shareability != 3) ||
+            (r->writeback == ArmSmmu4KDeviceNGnRE && ((r->permissions & ArmSmmu4KExecute) || r->shareability != 2)) ||
             r->physical >= output_limit || r->bytes > output_limit - r->physical)
             return ArmSmmu4KBadRange;
         if (upper ? (r->iova < UINT64_MAX-input_limit+1 || r->bytes-1 > UINT64_MAX-r->iova) :
@@ -47,6 +48,7 @@ static ArmSmmu4KStatus build_region(const ArmSmmu4KConfig *config,
         uint64_t pages = r->bytes / PAGE_BYTES;
         if (pages > config->leaf_budget - leaves) return ArmSmmu4KBudget;
         leaves += (size_t)pages;
+        device_memory |= r->writeback == ArmSmmu4KDeviceNGnRE;
     }
     /* Each range has at least one leaf, so the validated leaf budget also
      * bounds the range/alias loops. Sorted IOVAs make prefix counting exact. */
@@ -73,7 +75,7 @@ static ArmSmmu4KStatus build_region(const ArmSmmu4KConfig *config,
         if (!(r->permissions & ArmSmmu4KPrivileged)) attributes |= 1u << 6;
         if (!(r->permissions & ArmSmmu4KWrite)) attributes |= 1u << 7;
         attributes |= (uint64_t)r->shareability << 8;
-        if (r->writeback) attributes |= 1u << 2;
+        attributes |= (uint64_t)r->writeback << 2;
         for (uint64_t offset = 0; offset < r->bytes; offset += PAGE_BYTES) {
             uint64_t va = r->iova + offset;
             size_t table = 0;
@@ -88,7 +90,7 @@ static ArmSmmu4KStatus build_region(const ArmSmmu4KConfig *config,
         }
     }
     result->root_physical = pool;
-    result->mair = 0xff44;
+    result->mair = device_memory ? 0x04ff44 : 0xff44;
     result->table_pages = required;
     result->leaf_pages = leaves;
     result->start_level = start;
