@@ -1,0 +1,95 @@
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -25,6 +25,11 @@
+ static vm_offset_t gicd_base;
+ static vm_offset_t gicr_base;
+ static vm_offset_t gicr_size;
++#if defined(SWEET)
++static uint64_t gicr_physical;
++static vm_offset_t gicr_stride = GICR_PE_SIZE;
++extern void k70_wifi_its_record_pe(uint64_t, uint32_t, uint32_t) __attribute__((weak_import));
++#endif
+ 
+ static uint32_t
+ _gic_read32(vm_offset_t addr)
+@@ -53,13 +58,18 @@
+ static vm_offset_t
+ find_gicr_pe_base()
+ {
+-	// We only care about aff1 and aff0
+-	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+-
+-	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
++	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	uint32_t phys_id = (uint32_t)(((mpidr >> 32) & 0xff) << 24) | (uint32_t)(mpidr & 0xffffff);
++
++	#if defined(SWEET)
++	vm_offset_t stride = gicr_stride;
++#else
++	vm_offset_t stride = GICR_PE_SIZE;
++#endif
++	for (vm_offset_t offset = 0; offset + GICR_PE_SIZE <= gicr_size; offset += stride) {
+ 		vm_offset_t gicr_pe_base = gicr_base + offset;
+ 		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
+-		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
++		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT);
+ 
+ 		if (phys_id == aff_value) {
+ 			return gicr_pe_base;
+@@ -141,6 +151,20 @@
+ 		}
+ 
+ 		gicr_size = gicr_size_prop;
++#if defined(SWEET)
++		gicr_physical = soc_base_phys + gicr_base_prop;
++		void const *stride_prop;
++		unsigned int stride_size;
++		if (SecureDTGetProperty(entry, "redistributor-stride", &stride_prop, &stride_size) == kSuccess) {
++			if (stride_size != sizeof(uint64_t)) {
++				panic("%s: invalid redistributor-stride size %u", __func__, stride_size);
++			}
++			gicr_stride = *(const uint64_t *)stride_prop;
++		}
++		if (gicr_stride < GICR_PE_SIZE || (gicr_stride & (GICR_PE_SIZE - 1)) || gicr_stride > gicr_size) {
++			panic("%s: invalid redistributor stride %llu", __func__, (uint64_t)gicr_stride);
++		}
++#endif
+ 	}
+ 
+ 	// Find the redistributor for this processor
+@@ -213,6 +237,10 @@
+ 	}
+ 	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
++	uint64_t irq_mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++	uint32_t irq_affinity = (uint32_t)(((irq_mpidr >> 32) & 0xff) << 24) | (uint32_t)(irq_mpidr & 0xffffff);
++	if (k70_wifi_its_record_pe) {
++		k70_wifi_its_record_pe(gicr_physical + (gicr_pe_base - gicr_base),
++		    ml_get_cpu_number_local(), irq_affinity);
++	}
+ #else
+ 	// Enable the forwarding of the vtimer interrupt
+ 	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1847,6 +1847,11 @@
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(SWEET)
++extern int k70_wifi_its_handle_irq(uint32_t intid) __attribute__((weak_import));
++uint32_t k70_wifi_its_irq_hook_version(void) { return 1; }
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1882,7 +1887,7 @@
+ 		cpu_signal_handler();
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+-		if (cdp->interrupt_handler) {
++		if ((!k70_wifi_its_handle_irq || !k70_wifi_its_handle_irq(intid)) && cdp->interrupt_handler) {
+ 			cdp->interrupt_handler(cdp->interrupt_target,
+ 			    cdp->interrupt_refCon,
+ 			    cdp->interrupt_nub,

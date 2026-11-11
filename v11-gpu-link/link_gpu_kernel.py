@@ -5,6 +5,7 @@ images. It is not a boot image and is never marked runnable.
 """
 from pathlib import Path
 import argparse
+import base64
 import hashlib
 import json
 import struct
@@ -25,7 +26,7 @@ report_path=next(A.drivers.resolve().rglob('full-compile.json'))
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 assert sha(report_path)==C['compile_report_sha256']
 compiled=json.loads(report_path.read_text())
-assert compiled['passing_units']==compiled['total_units']==56
+assert compiled['passing_units']==compiled['total_units']==59
 assert compiled['global_abi_flags']==['-DK70_IOS16_IOKIT_ABI=1','-DK70_NATIVE_RUNTIME_TRUST=1']
 O=report_path.parent/'full-objects'
 for name,row in compiled['object_files'].items():
@@ -33,6 +34,12 @@ for name,row in compiled['object_files'].items():
     assert p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],name
 gpu=O/'libAdreno740-iOS16.a'
 assert sha(gpu)==compiled['gpu_archive_sha256']
+wifi=O/'libK70WifiNative-iOS16.a'
+assert sha(wifi)==compiled['wifi_archive_sha256']
+ath12k=OUT/'libAth12kWifi.a'
+encoded=''.join((W/name).read_text().strip() for name in C['ath12k']['chunks'])
+ath12k.write_bytes(base64.b64decode(encoded,validate=True))
+assert ath12k.stat().st_size==C['ath12k']['bytes'] and sha(ath12k)==C['ath12k']['sha256']
 B=X/'build/xnu.obj/DEVELOPMENT_ARM64_SWEET'
 original_list=(B/'link.filelist').read_text().splitlines()
 removed=[p for p in original_list if Path(p).name=='SweetFramebuffer.cpo']
@@ -79,7 +86,8 @@ for attempt in range(3):
     args=[t.replace('@XNU_BUILD@',str(X)).replace('@LINK_OUTPUT@',str(unstripped)) for t in recipe]
     assert args.count('-filelist')==1
     args[args.index('-filelist')+1]=str(fl)
-    args+=['-Wl,-force_load,'+str(gpu),str(fw.with_suffix('.o')),str(bindings.with_suffix('.o'))]
+    args+=['-Wl,-force_load,'+str(gpu),'-Wl,-force_load,'+str(wifi),
+           '-Wl,-force_load,'+str(ath12k),str(fw.with_suffix('.o')),str(bindings.with_suffix('.o'))]
     r=subprocess.run(['xcrun','clang++',*args],cwd=B,capture_output=True,text=True)
     (OUT/('link-pass'+str(attempt)+'.log')).write_text(r.stdout+r.stderr)
     print('GPU kernel link pass',attempt,'status',r.returncode,flush=True)
@@ -95,12 +103,14 @@ else:raise SystemExit('Parent mapping did not stabilize; refusing output qualifi
 symbols=subprocess.check_output(['xcrun','nm','-g','-m',str(final)],text=True)
 (OUT/'kernel-symbols.txt').write_text(symbols)
 required=['_k70_gpu_boot','_k70_gpu_execution','_k70_gpu_start_worker',
-          '_k70_frame_register','_k70_frame_offer',*C['parent_symbols']]
+          '_k70_frame_register','_k70_frame_offer','_k70_wifi_startup','_k70_wifi_dispatch',
+          '_sheng_wifi_wake','_k70_wifi_its_init','_k70_wifi_its_handle_irq',
+          '_k70_wifi_its_irq_hook_version',*C['parent_symbols']]
 strong={line.rsplit(None,1)[-1] for line in symbols.splitlines()
         if 'external ' in line and '(undefined)' not in line and 'weak ' not in line}
 assert set(required)<=strong,set(required)-strong
 assert '_sweet_amfi_policy_register' not in strong,'Legacy AMFI stand-in remains in the native profile'
-inputs=[report_path,gpu,O/'SweetFramebuffer.o',fw.with_suffix('.o'),bindings.with_suffix('.o'),
+inputs=[report_path,gpu,wifi,ath12k,O/'SweetFramebuffer.o',fw.with_suffix('.o'),bindings.with_suffix('.o'),
         *[W/name for name in ('link_gpu_kernel.py','link-recipe.json','link-config.json')]]
 native_inputs=[Path(p) for p in filelist[:-1]] + [B/name for name in
     ('version.o','lastkerneldataconst.o','lastkernelconstructor.o','nonlto.o','all-alias.exp','symbolsets.plist')]
@@ -111,12 +121,13 @@ index.write_text(json.dumps([dict(path=str(p),bytes=p.stat().st_size,sha256=sha(
 inputs.append(index)
 result=dict(schema='k70-v11-gpu-kernel-link/1',kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,
     cached_kernel_run=C.get('cached_kernel_run'),cached_kernel_commit=C.get('cached_kernel_commit'),
-    driver_run=C['driver_run'],driver_commit=C['driver_commit'],passing_driver_units=56,
+    driver_run=C['driver_run'],driver_commit=C['driver_commit'],passing_driver_units=59,
     source_inputs=[dict(path=str(p),bytes=p.stat().st_size,sha256=sha(p)) for p in inputs],
     removed_framebuffer_object=removed[0],replaced_framebuffer=True,
     gpu_worker_strong_definition=True,required_strong_symbols=required,
     passes=passes,prelink_slide=slide,firmware=C['firmware'],
     firmware_uploaded=False,firmware_inserted=False,original_prelink_emitted=False,
+    wifi_objects_linked=True,wifi_irq_hook_linked=True,native_backend_caller_linked=False,
     wifi_integrated=False,boot_qualified=False,hardware_verified=False)
 (OUT/'gpu-kernel-link.json').write_text(json.dumps(result,indent=2)+'\n')
 print('Linked actual GPU and display; firmware insertion, original prelink and ABI qualification remain')

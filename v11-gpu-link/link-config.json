@@ -1,7 +1,7 @@
 {
-  "driver_run": 43078270426,
-  "driver_commit": "2286bbb033afad5501ce0ad6ea875e43985546f9",
-  "compile_report_sha256": "f28aa7f50db51589b16e75f94ee51657ee1a7736b7faecb53a8c357b7bbaf22c",
+  "driver_run": 43091498480,
+  "driver_commit": "148439fe8dbba8d51c5ceefb505551c0970b1218",
+  "compile_report_sha256": "89856c1528d9ff15d30c98f6242d3cb3da1941ba54bbd2f97e205ae442a410d4",
   "firmware": {
     "gmu": {
       "file": "gmu_gen70200.bin",
@@ -31,6 +31,29 @@
   "initial_slide": -2130248302592,
   "firmware_uploaded": false,
   "parent_binding_report_sha256": "a9f01e7b895d00a46c4c82f2611757e46561aa5e830dd8bcbcc8821c92bf8ae6",
-  "cached_kernel_run": 43076755379,
-  "cached_kernel_commit": "e78a7c2ed97429cc8e5a599d67a39a302f08282b"
+  "ath12k": {
+    "bytes": 928552,
+    "sha256": "bd8eeab56781fe1346b61c010adfa414b9ec0022a13d7427ebc921b0b1f5bcde",
+    "passing_units": 54,
+    "total_units": 54,
+    "chunks": [
+      "ath12k-archive.00.b64",
+      "ath12k-archive.01.b64",
+      "ath12k-archive.02.b64",
+      "ath12k-archive.03.b64",
+      "ath12k-archive.04.b64",
+      "ath12k-archive.05.b64",
+      "ath12k-archive.06.b64",
+      "ath12k-archive.07.b64",
+      "ath12k-archive.08.b64",
+      "ath12k-archive.09.b64",
+      "ath12k-archive.10.b64",
+      "ath12k-archive.11.b64",
+      "ath12k-archive.12.b64",
+      "ath12k-archive.13.b64",
+      "ath12k-archive.14.b64",
+      "ath12k-archive.15.b64"
+    ],
+    "source_report_sha256": "87c01670b1973412f25c110931ae8d45970b4797cdaeaad26cbc269a8e5855d0"
+  }
 }
