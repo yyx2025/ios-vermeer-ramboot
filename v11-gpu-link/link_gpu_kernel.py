@@ -99,6 +99,7 @@ required=['_k70_gpu_boot','_k70_gpu_execution','_k70_gpu_start_worker',
 strong={line.rsplit(None,1)[-1] for line in symbols.splitlines()
         if 'external ' in line and '(undefined)' not in line and 'weak ' not in line}
 assert set(required)<=strong,set(required)-strong
+assert '_sweet_amfi_policy_register' not in strong,'Legacy AMFI stand-in remains in the native profile'
 inputs=[report_path,gpu,O/'SweetFramebuffer.o',fw.with_suffix('.o'),bindings.with_suffix('.o'),
         *[W/name for name in ('link_gpu_kernel.py','link-recipe.json','link-config.json')]]
 native_inputs=[Path(p) for p in filelist[:-1]] + [B/name for name in
