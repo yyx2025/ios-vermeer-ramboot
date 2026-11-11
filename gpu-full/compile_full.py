@@ -5,6 +5,14 @@ import argparse,concurrent.futures,hashlib,json,os,shlex,shutil,subprocess
 P=argparse.ArgumentParser();P.add_argument('--xnu-root',type=Path,required=True)
 A=P.parse_args();W=Path(__file__).resolve().parent;X=A.xnu_root.resolve()
 OUT=W/'full-objects';OUT.mkdir(exist_ok=True)
+def input_identity():
+    # Include headers and policy inputs, not only the translation units.
+    return {p.relative_to(W).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(W.rglob('*')) if p.is_file()
+            and not any(part in ('full-objects','metal-objects','__pycache__') for part in p.relative_to(W).parts)
+            and (p.suffix in ('.h','.c','.cpp','.mm','.metal','.py')
+                 or p == W/'compile-recipes.log')}
+inputs=input_identity()
 lines=(W/'compile-recipes.log').read_text().splitlines()
 def recipe(suffix):
     line=next(r.split('Z ',1)[1] for r in lines if r.endswith(suffix))
@@ -25,6 +33,7 @@ for name in required_headers:
     assert any((path/name).is_file() for path in includes), 'Missing actual startup policy: '+name
 page=OUT/'K70PageCheck.cpp';page.write_text('#include <mach/vm_param.h>\n#include "AdrenoHfiVotes.h"\nstatic_assert(PAGE_SIZE==16384,"K70 CPU geometry");\n'+''.join('#include "'+name+'"\n' for name in required_headers))
 units=list(sorted((W/'Adreno740').glob('*.cpp')))+[W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page]
+units+=[W/'K70/K70WifiStartup.cpp']
 units+=list(sorted((W/'ArmSmmu4K').glob('ArmSmmu4K*.c')))
 units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c','AdrenoHfiVotes.c','AdrenoFirmware.c')]
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
@@ -45,12 +54,14 @@ with concurrent.futures.ThreadPoolExecutor(4) as pool:rows=list(pool.map(compile
 report={'profile':'iOS16/XNU8796 DEVELOPMENT_ARM64_SWEET, 16KiB CPU pages','checks':rows,
     'passing_units':sum(r['exit_code']==0 for r in rows),'total_units':len(rows),
     'actual_gmu_startup_compiled':True,'required_generated_policy':list(required_headers),
-    'linked_to_boot_kernel':False,'hardware_verified':False}
+    'linked_to_boot_kernel':False,'hardware_verified':False,
+    'input_files':inputs,'input_identity_sha256':hashlib.sha256(json.dumps(inputs,sort_keys=True).encode()).hexdigest()}
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')
 for row in rows:
     if row['exit_code']:print(row['source'],*row['errors'][:4],sep='\n',flush=True)
 print('Actual Apple kernel compilation:',report['passing_units'],'/',len(rows),flush=True)
 if any(row['exit_code'] for row in rows):raise SystemExit(1)
+assert input_identity()==inputs, 'Source or header changed during compilation'
 archive=OUT/'libAdreno740-iOS16.a'
 archive.unlink(missing_ok=True)
 # Load the original parent before the derived accelerator's initializer.
@@ -58,7 +69,7 @@ llvm=Path(subprocess.check_output(['brew','--prefix','llvm'],text=True).strip())
 late=OUT/'NativeAdrenoAccelerator.late.o'
 subprocess.run([llvm,'--remove-section=__DATA,__mod_init_func',
     '--globalize-symbol=__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp',OUT/'NativeAdrenoAccelerator.o',late],check=True)
-gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70Display/SweetFramebuffer.cpp',W/'Adreno740/NativeAdrenoAccelerator.cpp',page)]+[late]
+gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70/K70WifiStartup.cpp',W/'K70Display/SweetFramebuffer.cpp',W/'Adreno740/NativeAdrenoAccelerator.cpp',page)]+[late]
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
 symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
 required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
@@ -68,4 +79,6 @@ for symbol in required_symbols:
 report['required_startup_definitions']=list(required_symbols)
 report['gpu_archive_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
 report['gpu_archive_bytes']=archive.stat().st_size
+report['object_files']={p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+                       for p in sorted(OUT.glob('*.o'))}
 (W/'full-compile.json').write_text(json.dumps(report,indent=2)+'\n')

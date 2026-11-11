@@ -41,6 +41,9 @@ jobs:
               ASAN_OPTIONS=detect_leaks=0 ./display-$page "$scenario"
             done
           done
+      - name: Check Wi-Fi startup and calibration rejection with sanitizers
+        if: always()
+        run: python3 gpu-full/check_wifi_startup_ci.py
       - name: Compile the frontend using the iOS SDK
         if: always()
         run: python3 gpu-full/compile_metal.py
@@ -53,4 +56,5 @@ jobs:
             gpu-full/full-objects
             gpu-full/metal-compile.json
             gpu-full/metal-objects
+            gpu-full/wifi-startup-sanitizer.json
           retention-days: 7

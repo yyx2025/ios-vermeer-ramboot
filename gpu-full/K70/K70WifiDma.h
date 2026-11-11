@@ -3,6 +3,9 @@
 #define K70_WIFI_DMA_H
 #include <stddef.h>
 #include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 enum {K70WifiDmaMaxBlocks=2048};
 struct K70WifiDmaBlock {size_t offset,owned,requested;};
 struct K70WifiDmaArena {
@@ -29,4 +32,7 @@ int k70_wifi_dma_free(struct K70WifiDmaArena *,size_t requested,void *cpu,uint64
 uint64_t k70_wifi_dma_map(struct K70WifiDmaArena *,void *cpu,size_t requested,int direction);
 int k70_wifi_dma_sync(struct K70WifiDmaArena *,uint64_t bus,size_t requested,int direction);
 void k70_wifi_dma_quarantine(struct K70WifiDmaArena *);
+#ifdef __cplusplus
+}
+#endif
 #endif
