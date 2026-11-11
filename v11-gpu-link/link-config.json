@@ -1,7 +1,7 @@
 {
-  "driver_run": 43072904709,
-  "driver_commit": "6494b6557ffdb67bf7ff145e9fc799b08f28fe76",
-  "compile_report_sha256": "9b8fee69b2c13edf89de9776bc54302caaa274279302e5d94414298fa0ac96ff",
+  "driver_run": 43078270426,
+  "driver_commit": "2286bbb033afad5501ce0ad6ea875e43985546f9",
+  "compile_report_sha256": "f28aa7f50db51589b16e75f94ee51657ee1a7736b7faecb53a8c357b7bbaf22c",
   "firmware": {
     "gmu": {
       "file": "gmu_gen70200.bin",
@@ -30,5 +30,7 @@
   },
   "initial_slide": -2130248302592,
   "firmware_uploaded": false,
-  "parent_binding_report_sha256": "a9f01e7b895d00a46c4c82f2611757e46561aa5e830dd8bcbcc8821c92bf8ae6"
+  "parent_binding_report_sha256": "a9f01e7b895d00a46c4c82f2611757e46561aa5e830dd8bcbcc8821c92bf8ae6",
+  "cached_kernel_run": 43076755379,
+  "cached_kernel_commit": "e78a7c2ed97429cc8e5a599d67a39a302f08282b"
 }

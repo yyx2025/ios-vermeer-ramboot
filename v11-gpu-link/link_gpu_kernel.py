@@ -110,6 +110,7 @@ index.write_text(json.dumps([dict(path=str(p),bytes=p.stat().st_size,sha256=sha(
                             for p in native_inputs],indent=2)+'\n')
 inputs.append(index)
 result=dict(schema='k70-v11-gpu-kernel-link/1',kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,
+    cached_kernel_run=C.get('cached_kernel_run'),cached_kernel_commit=C.get('cached_kernel_commit'),
     driver_run=C['driver_run'],driver_commit=C['driver_commit'],passing_driver_units=56,
     source_inputs=[dict(path=str(p),bytes=p.stat().st_size,sha256=sha(p)) for p in inputs],
     removed_framebuffer_object=removed[0],replaced_framebuffer=True,
