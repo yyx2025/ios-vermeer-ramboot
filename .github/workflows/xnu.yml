@@ -1,4 +1,4 @@
-name: K70 iOS16 ABI clean kernel rebuild
+name: K70 v11 actual GPU kernel link
 
 permissions:
   contents: read
@@ -160,6 +160,23 @@ jobs:
 
       - name: Verify rebuilt iOS16 IOKit and NativePrelink ABI
         run: python3 v11-kernel/check_kernel_abi.py dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: k70-v11-integration
+          path: gpu-driver-build
+          run-id: 43072904709
+          github-token: ${{ github.token }}
+
+      - name: Link actual GPU worker and replacement framebuffer
+        run: python3 v11-gpu-link/link_gpu_kernel.py --xnu-build dxb --drivers gpu-driver-build --output gpu-linked
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k70-v11-gpu-linked
+          path: gpu-linked/
+          retention-days: 7
 
       - name: Build minimal RAM-root init
         if: ${{ success() && (env.PROFILE == 'vermeer-ramroot' || env.PROFILE == 'vermeer-ufs-probe' || env.PROFILE == 'vermeer-hfs-ramroot' || env.PROFILE == 'vermeer-ufs-block') }}
