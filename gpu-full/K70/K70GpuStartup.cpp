@@ -107,6 +107,17 @@ class K70GpuStartup final {
     }
 public:
     IOReturn prepare(const K70GpuStartupConfig &c) {
+        /* Empty weak firmware defaults must fail before board power writes. */
+        report_.stage=K70GpuFirmware;
+        NativeAdrenoFirmwareRules rules{};
+        rules.bytes=SHENG_GMU_FIRMWARE_BYTES;
+        memcpy(rules.sha256,sheng_gmu_firmware_sha256,32);
+        NativeAdrenoFirmwareView validated{};
+        IOReturn status=NativeAdrenoFirmware::validate(native_adreno_firmware_image,
+            native_adreno_firmware_image_size,&rules,&validated);
+        if(status)return stop(status);
+        NativeAdrenoCpuState cpu{};
+        if((status=NativeAdrenoQueryCpuNative(&cpu)))return stop(status);
         report_.stage=K70GpuPower;
         for(unsigned i=0;i<3;++i) {
             if(!map(power_phys_[i],power_bytes_[i],power_maps_[i]))return stop(kIOReturnNoMemory);
@@ -149,7 +160,7 @@ public:
             windows[i]={reinterpret_cast<volatile uint8_t *>(gmu_maps_[i]->getVirtualAddress()),
                 sheng_gmu_window_bytes[i]};
         }
-        IOReturn status=platform_.bind(windows,&device_.io);
+        status=platform_.bind(windows,&device_.io);
         if(status)return stop(status);
         time_={nullptr,NativeAdrenoKernelTime::now_us,NativeAdrenoKernelTime::wait_us};
         if((status=platform_.services(&time_,&device_.services)))return stop(status);
@@ -180,14 +191,6 @@ public:
         votes.enable_acd=1;votes.enable_ifpc=0;
         report_.votes_status=ShengGmuBuildStartup(&votes,&startup_);
         if(report_.votes_status!=AdrenoHfiStartupSuccess)return stop(kIOReturnInvalid);
-        report_.stage=K70GpuFirmware;
-        NativeAdrenoFirmwareRules rules{};
-        rules.bytes=SHENG_GMU_FIRMWARE_BYTES;
-        memcpy(rules.sha256,sheng_gmu_firmware_sha256,32);
-        NativeAdrenoFirmwareView validated{};
-        status=NativeAdrenoFirmware::validate(native_adreno_firmware_image,
-            native_adreno_firmware_image_size,&rules,&validated);
-        if(status)return stop(status);
         report_.stage=K70GpuGmuContext;
         NativeAdrenoGmuContextReport context{};
         status=gmu_context_.bringUp(&smmu_io_,c.gmu_bank,c.gmu_asid,c.gmu_slot,
