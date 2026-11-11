@@ -9,10 +9,12 @@ const uint8_t stockModule[32]={0xe0,0x2d,0xff,0x73,0x76,0xec,0x96,0x67,
     0x3f,0x25,0xea,0x37,0xbe,0x9b,0xa3,0x5d,0x35,0x28};
 bool digestPresent(const uint8_t *p) {uint8_t v=0;for(unsigned i=0;i<32;++i)v|=p[i];return v!=0;}
 bool nameValid(const char *s) {
-    size_t n=0;for(;n<K70WifiNameMax && s[n];++n)
+    size_t n=0;for(;n<K70WifiNameMax && s[n];++n) {
         if(!((s[n]>='a'&&s[n]<='z')||(s[n]>='A'&&s[n]<='Z')||
              (s[n]>='0'&&s[n]<='9')||s[n]=='_'||s[n]=='-'||s[n]=='.'))return false;
-    return n && n<K70WifiNameMax && !strstr(s,"..");
+        if(n && s[n]=='.' && s[n-1]=='.')return false;
+    }
+    return n && n<K70WifiNameMax;
 }
 bool identityValid(const K70WifiIdentity &id) {
     return id.known==K70WifiIdentityAll && id.vendor==0x17cb && id.device==0x1107 &&
