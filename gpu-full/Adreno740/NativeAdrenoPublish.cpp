@@ -57,7 +57,9 @@ extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *
  * the newest complete blob to its export area. The render server sends its pipeline caches this way, so a later image can be built with them.
  * Input: {generation, total, offset, bytes} then the bytes. No GPU state is touched; any connection of the render server may send it. */
 enum : UInt32 {NativeAdrenoExportMethod=0x7100,NativeAdrenoExportMaxPiece=3968};
+#if !defined(K70_IOS16_IOKIT_ABI) || !K70_IOS16_IOKIT_ABI
 extern "C" int boot_log_export_put(uint32_t generation,uint32_t total,uint32_t offset,const void *data,uint32_t size) __attribute__((weak_import));
+#endif
 extern "C" {volatile uint32_t native_adreno_export_stats[4];}   /* [0] pieces taken, [1] refused, [2] last generation, [3] its total bytes */
 extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void);
 
@@ -457,6 +459,10 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
     if(method>=NativeAdrenoHandoffBase && method<=NativeAdrenoHandoffLast)
         return native_gop_handoff_call(method-NativeAdrenoHandoffBase,current_task(),input,input_size,output,output_size);
     if(method==NativeAdrenoExportMethod) {
+#if defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI
+        /* This profile owns a RAM root and provides no board UFS export sink. */
+        return kIOReturnUnsupported;
+#else
         struct Piece {uint32_t generation,total,offset,bytes;};
         char caller[20]={};proc_selfname(caller,sizeof caller);
         Piece piece{};
@@ -469,6 +475,7 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
         native_adreno_export_stats[0]=native_adreno_export_stats[0]+1;
         native_adreno_export_stats[2]=piece.generation;native_adreno_export_stats[3]=piece.total;
         return kIOReturnSuccess;
+#endif
     }
     if(method==NativeAdrenoMethodBoCpuUnmap && input && input_size==sizeof(NativeAdrenoAbiBoCpuUnmap)) {
         /* The view is shared by every CPU mapping of the BO, and dropViews removes all of them. A BO mapped twice (the view cache served 207
