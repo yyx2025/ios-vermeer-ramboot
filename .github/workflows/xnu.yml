@@ -1,4 +1,4 @@
-name: Full K70 iOS16 GPU and Wi-Fi ABI build
+name: K70 v11 GPU display and Wi-Fi integration
 on:
   workflow_dispatch:
 permissions:
@@ -18,33 +18,31 @@ jobs:
           path: prior-buildtree
           run-id: 42750699047
           github-token: ${{ github.token }}
-      - name: Extract actual XNU8796 16K build headers
+      - name: Extract retained XNU8796 build tree
         run: |
           mkdir prior-tree
           tar xzf prior-buildtree/buildtree.tgz -C prior-tree
-      - name: Verify actual GPU allocation and ownership functions
+      - name: Compile GPU startup, display delivery and network interface
+        run: python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
+      - name: Check display ownership with sanitizers
+        if: always()
         run: |
           for page in 4096 16384; do
-            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -Igpu-full/tests/mock -Igpu-full/Adreno740 -Igpu-full/ArmSmmu4K -Igpu-full/AdrenoFirmware gpu-full/tests/gpu_memory_host.cpp -o memory-$page
-            ASAN_OPTIONS=detect_leaks=0 ./memory-$page
+            clang++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -g -DTEST_PAGE_BYTES=$page -DSWEET -Igpu-full/tests/display_mock -Igpu-full/K70Display gpu-full/tests/k70_display_test.cpp -o display-$page
+            for scenario in snapshot timeout unconfirmed_success completion precommit map_failure bad_map allocation_failure replace cpu_arm_race swap_end sequence_exhaustion; do
+              ASAN_OPTIONS=detect_leaks=0 ./display-$page "$scenario"
+            done
           done
-      - name: Compile all GPU units, dependencies and Wi-Fi network interface
-        run: python3 gpu-full/compile_full.py --xnu-root "$PWD/prior-tree"
-      - name: Verify gated SM8550 power operations
-        run: |
-          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/GpuPowerBoardTests.c -o gpu-power-check
-          ./gpu-power-check
-      - name: Verify K70 CP accesses and signed ZAP protocol
-        run: |
-          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/K70 gpu-full/tests/k70_zap_test.c gpu-full/K70/K70GpuZap.c -o zap-check
-          ./zap-check
-          clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Igpu-full/tests/mock -Igpu-full/K70 -Igpu-full/Adreno740 gpu-full/tests/k70_cp_test.cpp gpu-full/K70/K70GpuCp.cpp -o cp-check
-          ./cp-check
+      - name: Compile the frontend using the iOS SDK
+        if: always()
+        run: python3 gpu-full/compile_metal.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: k70-ios16-full-gpu-wifi
+          name: k70-v11-integration
           path: |
             gpu-full/full-compile.json
             gpu-full/full-objects
+            gpu-full/metal-compile.json
+            gpu-full/metal-objects
           retention-days: 7

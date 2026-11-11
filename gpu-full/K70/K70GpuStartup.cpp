@@ -39,6 +39,9 @@ extern "C" const uint64_t native_adreno_sqe_firmware_image_size,native_adreno_za
 extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t,vm_size_t,unsigned int);
 extern "C" void ml_io_unmap(vm_offset_t,vm_size_t);
 extern "C" uint64_t gPhysBase,gPhysSize;
+/* Exported by the target XNU8796 ARM pmap implementation; omitted from its
+ * legacy umbrella header. Signature verified against arm/pmap/pmap.h. */
+extern "C" boolean_t pmap_valid_page(ppnum_t);
 
 namespace {
 class K70GpuStartup final {
@@ -470,7 +473,7 @@ public:
         const NativeAdrenoTimeIo timer_io{this,gpuRead};
         if((status=timer_.attach(&timer_io,NativeAdrenoTimeCp)))return stop(status);
         uint64_t ticks=0;if((status=timer_.read(&ticks)))return stop(status);
-        report_.stage=K70GpuExecution;report_.execution_ready=true;
+        report_.stage=K70GpuExecutionReady;report_.execution_ready=true;
         return stop(kIOReturnSuccess);
     }
     IOReturn execution(K70GpuExecution *out) {

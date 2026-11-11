@@ -22,7 +22,7 @@ enum K70GpuStartupStage : uint32_t {
     K70GpuGmuPrepared, K70GpuSmmuActlr, K70GpuSqe, K70GpuHwInit,
     K70GpuRing, K70GpuCpInit, K70GpuFirstWrite, K70GpuZapMemory,
     K70GpuZapInit, K70GpuZapSetup, K70GpuZapCopy, K70GpuZapAuth,
-    K70GpuSecureMode, K70GpuExecution
+    K70GpuSecureMode, K70GpuExecutionReady
 };
 struct K70GpuStartupReport {
     uint32_t stage;

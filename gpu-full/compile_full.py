@@ -19,7 +19,7 @@ def recipe(suffix):
         i+=1
     return result
 c=recipe('/bsd/dev/vermeer_usb_debug.c');cpp=recipe('/iokit/Kernel/arm/hid/SweetHID.cpp')
-includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','Ath12kWifi/include','K70','generated/sheng-gmu','generated/sheng-gpu-smmu')]+[X/'xnu/osfmk']
+includes=[W/p for p in ('Adreno740','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','Ath12kWifi/include','K70','K70Display','generated/sheng-gmu','generated/sheng-gpu-smmu')]+[X/'xnu/osfmk']
 required_headers=('ShengGmuSource.h','ShengGmuVotesSource.h','ShengGmuCommandDbSource.h','ShengGpuSmmuSource.h')
 for name in required_headers:
     assert any((path/name).is_file() for path in includes), 'Missing actual startup policy: '+name
@@ -30,6 +30,7 @@ units+=[W/'AdrenoFirmware'/name for name in ('AdrenoHfi.c','AdrenoHfiStartup.c',
 units+=[W/'AdrenoPM4/AdrenoPM4.c']
 units+=[W/'Sm8550Platform/ShengGmu.c',W/'Sm8550Platform/ShengGmuCommandDb.c',W/'K70/ShengGmuVotes.c',W/'K70/K70GpuStartup.cpp']
 units+=[W/'K70/K70GpuCp.cpp',W/'K70/K70GpuZap.c']
+units+=[W/'K70Display/K70FrameHandoff.cpp',W/'K70Display/SweetFramebuffer.cpp']
 assert len({p.stem for p in units})==len(units)
 def compile_one(source):
     compiler=shutil.which('clang++' if source.suffix=='.cpp' else 'clang')
@@ -50,7 +51,7 @@ for row in rows:
 print('Actual Apple kernel compilation:',report['passing_units'],'/',len(rows),flush=True)
 if any(row['exit_code'] for row in rows):raise SystemExit(1)
 archive=OUT/'libAdreno740-iOS16.a'
-gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',page)]
+gpu=[OUT/(s.stem+'.o') for s in units if s not in (W/'K70/WifiNet.cpp',W/'K70/K70WifiDma.c',W/'K70Display/SweetFramebuffer.cpp',page)]
 subprocess.run(['xcrun','ar','rcs',str(archive),*[str(p) for p in gpu]],check=True)
 symbols=subprocess.check_output(['xcrun','nm','-g',str(archive)],text=True)
 required_symbols=('ShengGmuColdStart','ShengGmuBuildStartup','ShengGmuCommandDbInputs',
