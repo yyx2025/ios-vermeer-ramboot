@@ -1,0 +1,39 @@
+{
+  "build": "20H392",
+  "original_kernel_sha256": "2ec297bac95bcba01046fd0148e97e7e5885c05a6c18827f39f534ba375c1221",
+  "original_iogpu_text_sha256": "447e63624112daed3e217e51ddfba54cd025d0769e280f89066c9e5cb61fa227",
+  "name": "0xfffffff00554762e",
+  "metaclass": "0xfffffff007bb6448",
+  "parent_metaclass": "0xfffffff0078baf08",
+  "expected_parent_metaclass": "0xfffffff0078baf08",
+  "instance_bytes": 136,
+  "virtual_entries": 168,
+  "operational_overrides": [],
+  "metadata_overrides": [
+    0,
+    1,
+    7
+  ],
+  "vptr": "0xfffffff006fc9e78",
+  "get_meta_class": "0xfffffff006b452b4",
+  "protected_constructor_aliases": [
+    "0xfffffff006b45228",
+    "0xfffffff006b45248"
+  ],
+  "non_deleting_destructor": "0xfffffff006b4526c",
+  "real_io_service_constructor_and_destructor_verified": true,
+  "class_constructor_call": {
+    "pc": 18446744005102569040,
+    "target": 18446744005102600544,
+    "arguments": [
+      18446744005119796296,
+      18446744005079496238,
+      18446744005116669704,
+      136
+    ]
+  },
+  "qualified": true,
+  "local_only": true,
+  "original_iogpu_loaded_in_current_boot_kernel": false,
+  "gpu_enabled": false
+}
