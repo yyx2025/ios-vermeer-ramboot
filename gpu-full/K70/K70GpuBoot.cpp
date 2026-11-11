@@ -3,6 +3,7 @@
 #include "NativeAdrenoABI.h"
 #include "NativeAdrenoGpuContext.h"
 #include <IOKit/IOService.h>
+#include <IOKit/IOPlatformExpert.h>
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSSymbol.h>
 #include <mach/kmod.h>
