@@ -1,0 +1,28 @@
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -146,6 +146,6 @@
+ 	     }};
+ 
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(K70_NATIVE_RUNTIME_TRUST)
+ /*
+  * The corecrypto kext normally installs the kernel PRNG. SWEET has no such
+  * kext: use the built-in HMAC-SHA256 DRBG, just as early_random does. A
+@@ -277,7 +277,7 @@
+ 	kprintf("SWEET PRNG: HMAC-SHA256 registered\n");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, sweet_prng_startup);
+-#endif /* SWEET */
++#endif /* SWEET && !K70_NATIVE_RUNTIME_TRUST */
+ 
+ static void read_erandom(void * buf, size_t nbytes);
+ 
+@@ -473,7 +473,7 @@
+ write_random(void * buffer, u_int numbytes)
+ {
+ 	uint8_t seed[SHA256_DIGEST_LENGTH];
+-#if defined(SWEET)
++#if defined(SWEET) && !defined(K70_NATIVE_RUNTIME_TRUST)
+ 	/* Hash without depending on the absent corecrypto kext's dispatch table. */
+ 	const struct ccdigest_info *di = &ccsha256_ltc_di;
+ 	ccdigest_di_decl(di, ctx);
