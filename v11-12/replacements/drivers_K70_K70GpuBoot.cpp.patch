@@ -1,0 +1,27 @@
+--- a/drivers/K70/K70GpuBoot.cpp
++++ b/drivers/K70/K70GpuBoot.cpp
+@@ -33,11 +33,13 @@
+ {
+     if(!report || !config)return kIOReturnBadArgument;
+     *report={};
+-    auto stop=[&](IOReturn status){report->status=status;return status;};
++    auto stop=[&](IOReturn status){report->status=status;
++        IOLog("K70 GPU: boot stage %u status 0x%x published %u\n",report->stage,status,report->published?1:0);return status;};
+     uint32_t expected=0;
+     if(!__atomic_compare_exchange_n(&attempted,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
+         return stop(kIOReturnBusy);
+     report->stage=1;
++    IOLog("K70 GPU: loading original IOGPUFamily\n");
+     IOReturn status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOGPUFamily");
+     if(status)return stop(status);
+     const OSSymbol *name=OSSymbol::withCString("IOAcceleratorES");
+@@ -69,6 +71,9 @@
+     service->setProperty("MetalPluginName","NativeAdrenoMetal");
+     service->setProperty("MetalPluginClassName","NativeAdrenoMetalDevice");
+     if(!service->attach(IOService::getPlatform())){service->release();return stop(kIOReturnNotAttached);}
++    if(!service->start(IOService::getPlatform())) {
++        service->detach(IOService::getPlatform());service->release();return stop(kIOReturnError);
++    }
+     service->registerService();
+     report->stage=6;report->published=true;
+     return stop(kIOReturnSuccess);

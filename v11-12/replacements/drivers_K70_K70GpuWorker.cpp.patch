@@ -1,0 +1,32 @@
+--- a/drivers/K70/K70GpuWorker.cpp
++++ b/drivers/K70/K70GpuWorker.cpp
+@@ -4,6 +4,7 @@
+ #include "K70GpuBoot.h"
+ #include <IOKit/IOLib.h>
+ #include <kern/thread.h>
++extern "C" IOReturn k70_aes_start(void);
+ 
+ #if !defined(K70_IOS16_IOKIT_ABI) || !K70_IOS16_IOKIT_ABI
+ #error K70GpuWorker requires the global iOS16 IOKit ABI rebuild
+@@ -19,6 +20,9 @@
+ void gpuThread(void *,wait_result_t)
+ {
+     thread_set_thread_name(current_thread(),"k70-gpu-start");
++    IOLog("K70 v11.12: startup worker entered\n");
++    const IOReturn aes=k70_aes_start();
++    IOLog("K70 AES: startup status 0x%x\n",aes);
+     const IOReturn result=k70_gpu_boot(&config,&retained_report);
+     IOLog("K70 GPU: startup stage %u status 0x%x published %u\n",
+         retained_report.stage,result,retained_report.published?1:0);
+@@ -34,7 +38,10 @@
+         __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return kIOReturnBusy;
+     thread_t thread=THREAD_NULL;
+     const kern_return_t result=kernel_thread_start(gpuThread,nullptr,&thread);
+-    if(result!=KERN_SUCCESS)return kIOReturnNoResources;
++    if(result!=KERN_SUCCESS) {
++        __atomic_store_n(&scheduled,0u,__ATOMIC_RELEASE);
++        return kIOReturnNoResources;
++    }
+     thread_deallocate(thread);
+     return kIOReturnSuccess;
+ }

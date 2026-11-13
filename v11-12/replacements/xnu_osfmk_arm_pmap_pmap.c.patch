@@ -1,0 +1,11 @@
+--- a/xnu/osfmk/arm/pmap/pmap.c
++++ b/xnu/osfmk/arm/pmap/pmap.c
+@@ -6883,7 +6883,7 @@
+ pmap_sync_page_attributes_phys(
+ 	ppnum_t pp)
+ {
+-	flush_dcache((vm_offset_t) (pp << PAGE_SHIFT), PAGE_SIZE, TRUE);
++	flush_dcache(ptoa_64(pp), PAGE_SIZE, TRUE);
+ }
+ 
+ #if CONFIG_COREDUMP

@@ -1,0 +1,106 @@
+--- a/xnu/libkern/c++/OSKext.cpp
++++ b/xnu/libkern/c++/OSKext.cpp
+@@ -1905,6 +1905,82 @@
+ }
+ /*********************************************************************
+ *********************************************************************/
++#if defined(K70_NATIVE_RUNTIME_TRUST) && __LP64__
++/* This ownership list includes executable AND KPI wrappers. The separate
++ * __macho_list remains the executable-only sparse allocation index.
++ * Each pair is an unslid header address and an exact byte length; lengths
++ * are not pointers and must never receive vm_kernel_slide.
++ */
++static bool
++native_prelink_borrowed_executable(const void *data, const void *source,
++    uint32_t length, kc_kind_t type)
++{
++    kernel_section_t *index = getsectbynamefromheader(&_mh_execute_header,
++        kPrelinkTextSegment, "__borrowed_list");
++    if (!index) {
++        if (getsectbynamefromheader(&_mh_execute_header,
++            kPrelinkTextSegment, "__macho_list")) {
++            panic("NativePrelink: sparse cache requires borrowed ownership index");
++        }
++        return false;
++    }
++    if (type != KCKindPrimary) {
++        panic("NativePrelink: borrowed ownership is primary-cache only");
++    }
++    kernel_segment_command_t *segment = getsegbynamefromheader(
++        &_mh_execute_header, kPrelinkTextSegment);
++    uintptr_t segmentEnd = 0, indexEnd = 0, dataEnd = 0;
++    uintptr_t address = (uintptr_t)data;
++    if (!segment || !segment->vmsize || !index->size ||
++        __builtin_add_overflow((uintptr_t)segment->vmaddr,
++        (uintptr_t)segment->vmsize, &segmentEnd) ||
++        index->size % (2 * sizeof(uintptr_t)) || index->addr % sizeof(uintptr_t) ||
++        __builtin_add_overflow((uintptr_t)index->addr,
++        (uintptr_t)index->size, &indexEnd) ||
++        index->addr < segment->vmaddr || indexEnd > segmentEnd ||
++        source != data || !data || address % sizeof(uintptr_t) ||
++        length < sizeof(kernel_mach_header_t) ||
++        __builtin_add_overflow(address, (uintptr_t)length, &dataEnd) ||
++        address < segment->vmaddr || dataEnd > index->addr) {
++        panic("NativePrelink: invalid borrowed executable bounds");
++    }
++    const uintptr_t *records = (const uintptr_t *)index->addr;
++    uintptr_t previous = 0;
++    bool found = false;
++    for (uintptr_t i = 0; i < index->size / (2 * sizeof(uintptr_t)); i++) {
++        uintptr_t current = 0, headerEnd = 0, wrapperEnd = 0;
++        uintptr_t unslid = records[2 * i], bytes = records[2 * i + 1];
++        if ((i && unslid <= previous) ||
++            __builtin_add_overflow(unslid, (uintptr_t)vm_kernel_slide, &current) ||
++            current % sizeof(uintptr_t) || current < segment->vmaddr ||
++            bytes < sizeof(kernel_mach_header_t) || bytes > UINT32_MAX ||
++            __builtin_add_overflow(current, bytes, &wrapperEnd) ||
++            wrapperEnd > index->addr ||
++            __builtin_add_overflow(current,
++            (uintptr_t)sizeof(kernel_mach_header_t), &headerEnd)) {
++            panic("NativePrelink: invalid borrowed executable index");
++        }
++        previous = unslid;
++        const kernel_mach_header_t *header = (const kernel_mach_header_t *)current;
++        if (header->magic != MH_MAGIC_64 ||
++            header->sizeofcmds > wrapperEnd - headerEnd ||
++            header->ncmds > header->sizeofcmds / sizeof(struct load_command)) {
++            panic("NativePrelink: invalid borrowed executable header");
++        }
++        if (current == address) {
++            if (bytes != length) {
++                panic("NativePrelink: borrowed executable length differs");
++            }
++            found = true;
++        }
++    }
++    if (!found) {
++        panic("NativePrelink: borrowed executable is not indexed");
++    }
++    return true;
++}
++#endif
++
+ bool
+ OSKext::initWithPrelinkedInfoDict(
+ 	OSDictionary * anInfoDict,
+@@ -2047,11 +2123,18 @@
+ 		if (PE_get_kc_format(kc_type, &format) && (format == KCFormatFileset)) {
+ 			prelinkedExecutable->setDeallocFunction(NULL);
+ 		} else { // Not from a Fileset KC
++#if defined(K70_NATIVE_RUNTIME_TRUST) && __LP64__
++			if (native_prelink_borrowed_executable(data, srcData, length, type)) {
++				prelinkedExecutable->setDeallocFunction(NULL);
++			} else
++#endif
++			{
+ #if VM_MAPPED_KEXTS
+-			prelinkedExecutable->setDeallocFunction(osdata_kext_free);
++				prelinkedExecutable->setDeallocFunction(osdata_kext_free);
+ #else
+-			prelinkedExecutable->setDeallocFunction(osdata_phys_free);
++				prelinkedExecutable->setDeallocFunction(osdata_phys_free);
+ #endif
++			}
+ 		}
+ 		setLinkedExecutable(prelinkedExecutable.get());
+ 		addressNum = OSDynamicCast(OSNumber,

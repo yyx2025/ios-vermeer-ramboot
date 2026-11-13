@@ -1,0 +1,201 @@
+--- a/xnu/iokit/Kernel/arm/SweetSurface.cpp
++++ b/xnu/iokit/Kernel/arm/SweetSurface.cpp
+@@ -28,6 +28,18 @@
+ #include "SweetSurface.h"
+ 
+ #if defined(SWEET)
++/* The native graphics profile retains Apple's IOSurface metaclasses.
++ * Keep the software surface provider in its own namespace in that profile.
++ */
++#if defined(K70_NATIVE_RUNTIME_TRUST)
++#define SWEET_SURFACE_CLIENT_CLASS_NAME "SWSurfaceRootUserClient"
++#define SWEET_SURFACE_REGISTERED_MESSAGE "SWEET SURF: SWCoreSurfaceRoot registered\n"
++#else
++#define SWCoreSurfaceRoot IOCoreSurfaceRoot
++#define SWSurfaceRootUserClient IOSurfaceRootUserClient
++#define SWEET_SURFACE_CLIENT_CLASS_NAME "IOSurfaceRootUserClient"
++#define SWEET_SURFACE_REGISTERED_MESSAGE "SWEET SURF: IOCoreSurfaceRoot registered\n"
++#endif
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOKitKeys.h>
+@@ -406,30 +418,30 @@
+ 	OSObject::free();
+ }
+ 
+-class IOCoreSurfaceRoot : public IOService {
+-	OSDeclareDefaultStructors(IOCoreSurfaceRoot);
++class SWCoreSurfaceRoot : public IOService {
++	OSDeclareDefaultStructors(SWCoreSurfaceRoot);
+ 
+ public:
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ };
+ 
+-OSDefineMetaClassAndStructors(IOCoreSurfaceRoot, IOService);
++OSDefineMetaClassAndStructors(SWCoreSurfaceRoot, IOService);
+ 
+ bool
+-IOCoreSurfaceRoot::start(IOService *provider)
++SWCoreSurfaceRoot::start(IOService *provider)
+ {
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
+ 	sweet_surface_init_lock();
+-	setProperty(kIOUserClientClassKey, "IOSurfaceRootUserClient");
++	setProperty(kIOUserClientClassKey, SWEET_SURFACE_CLIENT_CLASS_NAME);
+ 	registerService();
+-	IOLog("SWEET SURF: IOCoreSurfaceRoot registered\n");
++	IOLog(SWEET_SURFACE_REGISTERED_MESSAGE);
+ 	return true;
+ }
+ 
+-class IOSurfaceRootUserClient : public IOUserClient {
+-	OSDeclareDefaultStructors(IOSurfaceRootUserClient);
++class SWSurfaceRootUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SWSurfaceRootUserClient);
+ 
+ 	task_t   fTask;
+ 	IOLock  *fLock;
+@@ -455,7 +467,7 @@
+ 	IOReturn trapRelease(void *id, void *, void *, void *, void *, void *);
+ };
+ 
+-OSDefineMetaClassAndStructors(IOSurfaceRootUserClient, IOUserClient);
++OSDefineMetaClassAndStructors(SWSurfaceRootUserClient, IOUserClient);
+ 
+ static uint64_t sweet_surf_logged;      /* selectors / traps already logged (< 64) */
+ 
+@@ -473,7 +485,7 @@
+ }
+ 
+ bool
+-IOSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++SWSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
+ {
+ 	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
+ 		return false;
+@@ -485,7 +497,7 @@
+ }
+ 
+ void
+-IOSurfaceRootUserClient::free()
++SWSurfaceRootUserClient::free()
+ {
+ 	OSSafeReleaseNULL(fRefs);
+ 	if (fLock != NULL) {
+@@ -496,7 +508,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::clientClose(void)
++SWSurfaceRootUserClient::clientClose(void)
+ {
+ 	IOLockLock(fLock);
+ 	fRefs->flushCollection();
+@@ -507,7 +519,7 @@
+ 
+ /* Lock held. */
+ SweetSurfaceRef *
+-IOSurfaceRootUserClient::findRef(uint32_t id, unsigned int *index)
++SWSurfaceRootUserClient::findRef(uint32_t id, unsigned int *index)
+ {
+ 	for (unsigned int i = 0; i < fRefs->getCount(); i++) {
+ 		SweetSurfaceRef *ref = (SweetSurfaceRef *)fRefs->getObject(i);
+@@ -533,7 +545,7 @@
+  * snapshot crash in CGDataProviderCreateWithData).
+  */
+ IOReturn
+-IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool *existing)
++SWSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool *existing)
+ {
+ 	*existing = false;
+ 	IOLockLock(fLock);
+@@ -649,7 +661,7 @@
+ 
+ /* Map s for this client and answer with its lock result. Takes s's user count. */
+ IOReturn
+-IOSurfaceRootUserClient::returnSurface(SweetSurface *s, IOExternalMethodArguments *args)
++SWSurfaceRootUserClient::returnSurface(SweetSurface *s, IOExternalMethodArguments *args)
+ {
+ 	SweetSurfaceRef *ref = NULL;
+ 	bool existing = false;
+@@ -676,7 +688,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
++SWSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ {
+ 	const char *buf = (const char *)args->structureInput;
+ 	uint32_t len = args->structureInputSize;
+@@ -751,7 +763,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++SWSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
+     __unused void *reference)
+ {
+@@ -815,7 +827,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::trapUseCount(__unused void *id, __unused void *category,
++SWSurfaceRootUserClient::trapUseCount(__unused void *id, __unused void *category,
+     void *, void *, void *, void *)
+ {
+ 	return kIOReturnSuccess;
+@@ -851,7 +863,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
++SWSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
+     void *, void *, void *)
+ {
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
+@@ -864,7 +876,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
++SWSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+     void *, void *, void *)
+ {
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
+@@ -878,7 +890,7 @@
+ }
+ 
+ IOReturn
+-IOSurfaceRootUserClient::trapRelease(void *id, void *, void *, void *, void *, void *)
++SWSurfaceRootUserClient::trapRelease(void *id, void *, void *, void *, void *, void *)
+ {
+ 	unsigned int index;
+ 	IOLockLock(fLock);
+@@ -891,16 +903,16 @@
+ }
+ 
+ static IOExternalTrap sweet_surface_traps[] = {
+-	[kSweetSurfaceTrapIncrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
+-	[kSweetSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
+-	[kSweetSurfaceTrapLock]          = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapLock },
+-	[kSweetSurfaceTrapUnlock]        = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUnlock },
+-	[kSweetSurfaceTrapRelease]       = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapRelease },
+-	[kSweetSurfaceTrapReleaseFailed] = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapRelease },
++	[kSweetSurfaceTrapIncrementUse]  = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapUseCount },
++	[kSweetSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapUseCount },
++	[kSweetSurfaceTrapLock]          = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapLock },
++	[kSweetSurfaceTrapUnlock]        = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapUnlock },
++	[kSweetSurfaceTrapRelease]       = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapRelease },
++	[kSweetSurfaceTrapReleaseFailed] = { NULL, (IOTrap) & SWSurfaceRootUserClient::trapRelease },
+ };
+ 
+ IOExternalTrap *
+-IOSurfaceRootUserClient::getTargetAndTrapForIndex(IOService **targetP, UInt32 index)
++SWSurfaceRootUserClient::getTargetAndTrapForIndex(IOService **targetP, UInt32 index)
+ {
+ 	if (index >= sizeof(sweet_surface_traps) / sizeof(sweet_surface_traps[0])) {
+ 		sweet_surf_log_once("trap", index);

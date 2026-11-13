@@ -1,0 +1,22 @@
+--- a/xnu/iokit/KernelConfigTables.cpp
++++ b/xnu/iokit/KernelConfigTables.cpp
+@@ -57,11 +57,19 @@
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOWatchdog;"
+     "   },"
++#if defined(K70_NATIVE_RUNTIME_TRUST)
++    "   {"
++    "     'IOClass'         = SWCoreSurfaceRoot;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = SWCoreSurfaceRoot;"
++    "   },"
++#else
+     "   {"
+     "     'IOClass'         = IOCoreSurfaceRoot;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOCoreSurfaceRoot;"
+     "   },"
++#endif
+     "   {"
+     "     'IOClass'         = AppleCLCD;"
+     "     'IOProviderClass' = IOPlatformDevice;"
