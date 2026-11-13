@@ -25,8 +25,9 @@ for row in native:
 
 flags=json.loads((W/'compile-flags.json').read_text())
 checks=[]
-def compile(source,output,cpp=True):
-    args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in flags['cpp' if cpp else 'c']]
+def compile(source,output,cpp=True,native_relative=None):
+    selected=flags['native'][native_relative] if native_relative in flags.get('native',{}) else flags['cpp' if cpp else 'c']
+    args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in selected]
     # Source replacement headers take precedence over the archived tree.
     source_root=W/'replacements/xnu'
     inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',
@@ -37,7 +38,8 @@ def compile(source,output,cpp=True):
     driver=Path('retained-driver-source').resolve()/'gpu-full'
     inc += [driver/p for p in ('Adreno740','AdrenoMetal','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','K70','K70Display','generated/sheng-gmu','generated/sheng-gpu-smmu')]
     args=[*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
-    result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=B/'iokit/DEVELOPMENT',capture_output=True,text=True)
+    directory='iokit' if native_relative is None else native_relative.split('/')[0]
+    result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=B/directory/'DEVELOPMENT',capture_output=True,text=True)
     (OUT/(source.stem+'.log')).write_text(result.stdout+result.stderr)
     print('Compile',source.name,result.returncode,flush=True)
     if result.returncode:print(result.stderr[-8000:]);raise SystemExit(result.returncode)
@@ -52,7 +54,7 @@ units={
 }
 for relative,(output,cpp) in units.items():
     assert (B/output).is_file(),output
-    compile(W/'replacements/xnu'/relative,B/output,cpp)
+    compile(W/'replacements/xnu'/relative,B/output,cpp,relative)
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
