@@ -29,7 +29,8 @@ def compile(source,output,cpp=True):
     args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in flags['cpp' if cpp else 'c']]
     # Source replacement headers take precedence over the archived tree.
     source_root=W/'replacements/xnu'
-    inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',X/'xnu/osfmk',W/'SoftwareAES']
+    inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',
+         *[X/'xnu'/p for p in ('libkern','iokit','osfmk','bsd','pexpert')],W/'SoftwareAES']
     inc += [O.parent.parent.parent/'source'/p for p in ()]
     # Only the required retained driver headers are fetched from the pinned
     # source commit; the source archive is prepared separately by the workflow.
@@ -52,7 +53,7 @@ units={
 for relative,(output,cpp) in units.items():
     assert (B/output).is_file(),output
     compile(W/'replacements/xnu'/relative,B/output,cpp)
-for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup'):
+for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
 

@@ -59,6 +59,12 @@ const char * gIOKernelConfigTables =
     "   },"
 #if defined(K70_NATIVE_RUNTIME_TRUST)
     "   {"
+    "     'IOClass'         = K70StartupService;"
+    "     'IOProviderClass' = IOResources;"
+    "     'IOResourceMatch' = IOBSD;"
+    "     'IOMatchCategory' = K70StartupService;"
+    "   },"
+    "   {"
     "     'IOClass'         = SWCoreSurfaceRoot;"
     "     'IOProviderClass' = IOResources;"
     "     'IOMatchCategory' = SWCoreSurfaceRoot;"
