@@ -141,8 +141,11 @@ for attempt in range(4):
     unstripped=OUT/('kernel.pass'+str(attempt)+'.unstripped')
     args=[s.replace('@XNU_BUILD@',str(X)).replace('@LINK_OUTPUT@',str(unstripped)) for s in recipe]
     args[args.index('-filelist')+1]=str(fl)
-    args+=['-Wl,-force_load,'+str(gpu),'-Wl,-force_load,'+str(O/'libK70WifiNative-iOS16.a'),
-        '-Wl,-force_load,'+str(Path('ath12k.a').resolve()),str(fw.with_suffix('.o')),str(asm.with_suffix('.o')),str(OUT/'NativeAES.late.o')]
+    # This candidate requests AES and GPU only. The newer Wi-Fi archive has
+    # an iOS userspace platform object and requires an absent ITS kernel hook;
+    # it was never linked into the successful retained GPU kernel. Do not
+    # introduce that unfinished backend into a Wi-Fi-disabled RAM profile.
+    args+=['-Wl,-force_load,'+str(gpu),str(fw.with_suffix('.o')),str(asm.with_suffix('.o')),str(OUT/'NativeAES.late.o')]
     result=subprocess.run(['xcrun','clang++',*args],cwd=B,capture_output=True,text=True)
     (OUT/('link-pass'+str(attempt)+'.log')).write_text(result.stdout+result.stderr)
     print('Link pass',attempt,result.returncode,flush=True)
@@ -162,6 +165,7 @@ report=dict(schema='k70-v11-12-apple-source-relink/1',compiler=subprocess.check_
     kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,checks=checks,passes=passes,prelink_slide=slide,
     firmware=C['firmware'],cached_kernel_run=43076755379,retained_driver_run=43091498480,
     changed_native_units=list(units),original_ios16_aes_vtable_slots_verified=181,
-    hardware_verified=False,firmware_inserted=False,original_prelink_emitted=False)
+    hardware_verified=False,firmware_inserted=False,original_prelink_emitted=False,
+    wifi_boot_requested=False,new_wifi_backend_linked=False)
 (OUT/'source-relink.json').write_text(json.dumps(report,indent=2)+'\n')
 print('PASS: Apple compilation, source fixes and original iOS16 AES ABI; hardware pending')
