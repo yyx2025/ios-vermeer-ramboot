@@ -1,0 +1,59 @@
+{
+  "driver_run": 43091498480,
+  "driver_commit": "148439fe8dbba8d51c5ceefb505551c0970b1218",
+  "compile_report_sha256": "89856c1528d9ff15d30c98f6242d3cb3da1941ba54bbd2f97e205ae442a410d4",
+  "firmware": {
+    "gmu": {
+      "file": "gmu_gen70200.bin",
+      "bytes": 66844,
+      "sha256": "1a2a419c39046d3141fc5fed5aa7f971de2db40cc7a1d89693c3e26fad64dd98",
+      "symbol": "native_adreno_firmware_image"
+    },
+    "sqe": {
+      "file": "a740_sqe.fw",
+      "bytes": 76724,
+      "sha256": "96fee336424b139100fc60b5b45a907360e4b3936d7e1d00406b9bd80ca48473",
+      "symbol": "native_adreno_sqe_firmware_image"
+    },
+    "zap": {
+      "file": "a740_zap.mbn",
+      "bytes": 12088,
+      "sha256": "2015e9bb81b1f6efed11fdab0a5884b3f308ca41d50f4315e3ed2e36ee5e57f1",
+      "symbol": "native_adreno_zap_image"
+    }
+  },
+  "original_prelink_base": 18446744005071634432,
+  "parent_symbols": {
+    "__ZN15IOAcceleratorESC2EPK11OSMetaClass": 18446744005102555688,
+    "__ZN15IOAcceleratorESD2Ev": 18446744005102555756,
+    "__ZN15IOAcceleratorES10gMetaClassE": 18446744005119796296
+  },
+  "initial_slide": -2130248302592,
+  "firmware_uploaded": false,
+  "parent_binding_report_sha256": "a9f01e7b895d00a46c4c82f2611757e46561aa5e830dd8bcbcc8821c92bf8ae6",
+  "ath12k": {
+    "bytes": 928552,
+    "sha256": "bd8eeab56781fe1346b61c010adfa414b9ec0022a13d7427ebc921b0b1f5bcde",
+    "passing_units": 54,
+    "total_units": 54,
+    "chunks": [
+      "ath12k-archive.00.b64",
+      "ath12k-archive.01.b64",
+      "ath12k-archive.02.b64",
+      "ath12k-archive.03.b64",
+      "ath12k-archive.04.b64",
+      "ath12k-archive.05.b64",
+      "ath12k-archive.06.b64",
+      "ath12k-archive.07.b64",
+      "ath12k-archive.08.b64",
+      "ath12k-archive.09.b64",
+      "ath12k-archive.10.b64",
+      "ath12k-archive.11.b64",
+      "ath12k-archive.12.b64",
+      "ath12k-archive.13.b64",
+      "ath12k-archive.14.b64",
+      "ath12k-archive.15.b64"
+    ],
+    "source_report_sha256": "87c01670b1973412f25c110931ae8d45970b4797cdaeaad26cbc269a8e5855d0"
+  }
+}

@@ -1,4 +1,4 @@
-name: K70 v11.20 SMP/PSCI kernel relink
+name: K70 v11.21 present fast-path kernel relink
 on:
   workflow_dispatch:
 permissions:
@@ -48,22 +48,24 @@ jobs:
           assert len(b)==c['bytes'] and hashlib.sha256(b).hexdigest()==c['sha256']
           Path('ath12k.a').write_bytes(b)
           PY
-      - name: Compile SMP/PSCI units and relink the kernel
+      - name: Compile present fast path and relink the kernel
         run: |
           brew install llvm
-          python3 v11-20/build_apple_smp.py
-      - name: Report SMP symbols in the linked kernel
+          python3 v11-21/build_apple_present.py
+      - name: Report present fast path and SMP symbols
         if: always()
         run: |
-          r=v11-20-result
+          r=v11-21-result
           if [ -f "$r/kernel.firmware-slots" ]; then
-            for s in _sweet_psci_cpu_on _sweet_secondary_entry _sweet_cpu_signal_is_enabled; do
+            for s in _sweet_secondary_entry _sweet_cpu_signal_is_enabled; do
               if xcrun nm -g -m "$r/kernel.firmware-slots" | grep -q " $s\$"; then
                 echo "present $s"
               else
                 echo "::error::missing $s"
               fi
             done
+            printf 'present fast path strings: '
+            strings -a "$r/kernel.firmware-slots" | grep -c 'present fast path' || true
             printf 'single-CPU panic strings: '
             strings -a "$r/kernel.firmware-slots" | grep -c 'only single-CPU bring-up' || true
           else
@@ -72,6 +74,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: k70-v11-20-smp-relink
-          path: v11-20-result/
+          name: k70-v11-21-present-relink
+          path: v11-21-result/
           retention-days: 7
