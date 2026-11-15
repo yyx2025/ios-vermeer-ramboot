@@ -189,9 +189,14 @@ assert '_k70_aes_start' in names and '_k70_gpu_boot' in names
 local=subprocess.check_output(['xcrun','nm','-m',final],text=True)
 assert '_sweet_secondary_entry' in names, 'missing SMP trampoline'
 assert '_sweet_cpu_signal_is_enabled' in names, 'missing SMP bring-up observer'
-assert '_sweet_psci_cpu_on' in local, 'missing PSCI CPU_ON wrapper'
-assert 'only single-CPU bring-up' not in final.read_bytes().decode('latin-1')
-assert '_sweet_secondary_entry' in local and '_sweet_psci_cpu_on' in local
+# The PSCI wrapper is a small `static` helper at -O2 and is inlined into
+# startAll(), so it never materialises as a symbol.  Assert the SMP bring-up
+# code and its log strings are really in the linked image instead.
+blob = final.read_bytes()
+assert '_sweet_secondary_entry' in local, 'missing SMP trampoline in the image'
+for text in (b'PSCI CPU_ON rc=%d', b'came alive; SGI1 OK', b'CPUs initialized, SGI1 verified'):
+    assert text in blob, 'missing SMP log string ' + text.decode()
+assert b'only single-CPU bring-up' not in blob, 'single-CPU panic string survived'
 report=dict(schema='k70-v11-20-smp-apple-source-relink/1',compiler=subprocess.check_output(['xcrun','clang','--version'],text=True).splitlines()[0],
     kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,checks=checks,passes=passes,prelink_slide=slide,
     firmware=C['firmware'],cached_kernel_run=43076755379,retained_driver_run=43091498480,
