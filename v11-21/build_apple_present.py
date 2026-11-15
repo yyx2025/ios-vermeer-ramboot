@@ -60,7 +60,10 @@ def compile(source,output,cpp=True,native_relative=None):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
     args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
-    result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=B/directory/'DEVELOPMENT',capture_output=True,text=True)
+    cwd=B/directory/'DEVELOPMENT'
+    if not cwd.is_dir():
+        cwd=B
+    result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=cwd,capture_output=True,text=True)
     (OUT/(source.stem+'.log')).write_text(result.stdout+result.stderr)
     print('Compile',source.name,result.returncode,flush=True)
     if result.returncode:print(result.stderr[-8000:]);raise SystemExit(result.returncode)
@@ -79,10 +82,21 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
+ # v11.23 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ 'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
 }
+
+def object_path(output):
+    """Locate an object in the retained build tree; new units may live elsewhere."""
+    if (B/output).is_file():
+        return B/output
+    hits=sorted(p for p in B.rglob(Path(output).name) if p.is_file())
+    assert len(hits)==1,(output,[str(p) for p in hits])
+    return hits[0]
+
 for relative,(output,cpp) in units.items():
-    assert (B/output).is_file(),output
-    compile(W/'replacements/xnu'/relative,B/output,cpp,relative)
+    target=object_path(output)
+    compile(W/'replacements/xnu'/relative,target,cpp,relative)
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
