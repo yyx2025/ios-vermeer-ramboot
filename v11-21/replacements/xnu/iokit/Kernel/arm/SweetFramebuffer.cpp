@@ -315,6 +315,17 @@ AppleCLCD::start(IOService *provider)
 	if (!IOService::start(provider)) {
 		return false;
 	}
+	/* Every early-exit below runs before the fast-path tables exist, and free()
+	 * may be called on the way out: the pointers must never be indeterminate. */
+	fRowHash = NULL;
+	fRowCode = NULL;
+	fRowSkip = false;
+	fRowCacheStale = false;
+	fStats = false;
+	fConsolePaused = false;
+	fStatFrames = fStatRows = fStatSkipped = 0;
+	fStatNanos = 0;
+	fHPeriods = 0;
 	PE_current_console(&video);
 	fPhys = video.v_baseAddr;
 	fWidth = (uint32_t)video.v_width;
