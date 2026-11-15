@@ -14,6 +14,15 @@
 
 
 #if HAS_GIC_V3
+/*
+ * ml_io_map() is declared in <osfmk/arm/machine_routines.h> only under
+ * PEXPERT_KERNEL_PRIVATE || MACH_KERNEL_PRIVATE.  The real pexpert build
+ * passes one of them; the SWEET relink compiles this single unit with the
+ * generic flags, so declare the one entry point it needs instead of
+ * changing visibility for the whole file.
+ */
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+
 #define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
 MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
 
