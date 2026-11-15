@@ -47,6 +47,11 @@ def compile(source,output,cpp=True,native_relative=None):
     # source commit; the source archive is prepared separately by the workflow.
     driver=Path('retained-driver-source').resolve()/'gpu-full'
     inc += [driver/p for p in ('Adreno740','AdrenoMetal','ArmSmmu4K','AdrenoFirmware','AdrenoPM4','Sm8550Platform','K70','K70Display','generated/sheng-gmu','generated/sheng-gpu-smmu')]
+    # osfmk/arm64 units need the kernel-private define the real XNU makefile
+    # passes: without it <kern/thread.h>, <kern/processor.h>, flush_dcache() and
+    # the getCpuDatap() macro stay hidden and cpu.c/machine_routines.c fail.
+    if source.name in ('cpu.c', 'machine_routines.c', 'start.s'):
+        args = ['-DMACH_KERNEL_PRIVATE=1', *args]
     args=[*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
     result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=B/directory/'DEVELOPMENT',capture_output=True,text=True)
