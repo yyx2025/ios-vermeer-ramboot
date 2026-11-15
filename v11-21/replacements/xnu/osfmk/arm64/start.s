@@ -288,6 +288,15 @@ LEXT(bootstrap_instructions)
 	.align 2
 	.globl EXT(sweet_secondary_entry)
 LEXT(sweet_secondary_entry)
+	/*
+	 * First instruction after PSCI CPU_ON.  Drop whatever the I-cache held when
+	 * the core re-entered reset; every fetch below this point then comes from
+	 * memory, so neither the EL2 prologue nor the reset vector can execute a
+	 * stale encoding.  Legal at EL1 and EL2 without the MMU.
+	 */
+	ic		iallu
+	dsb		sy
+	isb
 	msr		DAIFSet, #0xf
 	mrs		x1, CurrentEL
 	cmp		x1, #0x4
@@ -794,7 +803,20 @@ common_start:
 #endif
 
 #if defined(SWEET)
-	/* Complete local TLB/I-cache invalidation before enabling the MMU. */
+	/*
+	 * Apple SoCs are documented as entering reset with a clean I-cache, which is
+	 * why apple_arm64_common.h defines __ARM_IC_NOALIAS_ICACHE__ and compiles the
+	 * block above away.  Qualcomm firmware makes no such promise: a core started
+	 * with PSCI CPU_ON begins with undefined I-cache contents and executes
+	 * whatever happened to be left there.  The failure surfaces as
+	 * "Undefined kernel instruction" at a perfectly valid PC, because the
+	 * instruction the panic path reads back from memory is legitimate.
+	 *
+	 * The TLB and I-cache are empty at this point, so invalidating
+	 * unconditionally costs microseconds and removes the assumption.
+	 */
+	tlbi	vmalle1
+	ic		iallu
 	dsb		sy
 	isb
 #endif
