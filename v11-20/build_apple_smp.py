@@ -50,9 +50,12 @@ def compile(source,output,cpp=True,native_relative=None):
     # osfmk/arm64 units need the kernel-private define the real XNU makefile
     # passes: without it <kern/thread.h>, <kern/processor.h>, flush_dcache() and
     # the getCpuDatap() macro stay hidden and cpu.c/machine_routines.c fail.
+    # With that define <osfmk/string.h> asks for a bare <types.h>, so a shim
+    # directory on the include path forwards it to the exported sys/types.h.
+    extra=[]
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s'):
-        args = ['-DMACH_KERNEL_PRIVATE=1', *args]
-    args=[*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
+        extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
+    args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
     result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=B/directory/'DEVELOPMENT',capture_output=True,text=True)
     (OUT/(source.stem+'.log')).write_text(result.stdout+result.stderr)
