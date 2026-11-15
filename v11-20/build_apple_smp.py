@@ -184,11 +184,14 @@ names=subprocess.check_output(['xcrun','nm','-g','-m',final],text=True)
 assert '_sweet_amfi_policy_register' not in names
 assert '_sweet_prng_startup' not in names
 assert '_k70_aes_start' in names and '_k70_gpu_boot' in names
-# v11.20: the SMP path must actually exist in the linked image.
-for symbol in ('_sweet_psci_cpu_on', '_sweet_secondary_entry'):
-    assert symbol in names, 'missing SMP symbol ' + symbol
+# v11.20: the SMP path must actually exist in the linked image.  The PSCI
+# wrapper is `static` inside SweetCPU.cpp, so it only shows in the local table.
+local=subprocess.check_output(['xcrun','nm','-m',final],text=True)
+assert '_sweet_secondary_entry' in names, 'missing SMP trampoline'
+assert '_sweet_cpu_signal_is_enabled' in names, 'missing SMP bring-up observer'
+assert '_sweet_psci_cpu_on' in local, 'missing PSCI CPU_ON wrapper'
 assert 'only single-CPU bring-up' not in final.read_bytes().decode('latin-1')
-assert '_sweet_cpu_signal_is_enabled' in names
+assert '_sweet_secondary_entry' in local and '_sweet_psci_cpu_on' in local
 report=dict(schema='k70-v11-20-smp-apple-source-relink/1',compiler=subprocess.check_output(['xcrun','clang','--version'],text=True).splitlines()[0],
     kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,checks=checks,passes=passes,prelink_slide=slide,
     firmware=C['firmware'],cached_kernel_run=43076755379,retained_driver_run=43091498480,
