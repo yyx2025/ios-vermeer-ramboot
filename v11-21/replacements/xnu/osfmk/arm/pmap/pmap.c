@@ -39,6 +39,11 @@
 
 #include <mach/boolean.h>
 #include <kern/bits.h>
+#if defined(K70_NATIVE_RUNTIME_TRUST)
+#include <kern/backtrace.h>
+#include <sys/systm.h>
+#include "QcomXnuUsbDebug.h"
+#endif
 #include <kern/ecc.h>
 #include <kern/thread.h>
 #include <kern/sched.h>
@@ -2807,6 +2812,34 @@ pmap_assert_free(ppnum_t ppnum)
 		/* First PTE is mapped by the main CPUs. */
 		pmap_t pmap = ptep_get_pmap(first_ptep);
 		const char *type = (pmap == kernel_pmap) ? "Kernel" : "User";
+
+#if defined(K70_NATIVE_RUNTIME_TRUST)
+		/* A real leftover mapping must stay fatal. Preserve its owner and
+		 * the freeing stack before panic so the page lifecycle can be fixed.
+		 * Enqueue only: this path may hold VM locks or run on a secondary CPU. */
+		char line[256];
+		int length = snprintf(line, sizeof(line),
+		    "K70 PMAP: free pa=0x%llx owner=%d %.16s va=0x%llx pte=0x%llx pmap=%p\n",
+		    (uint64_t)pa, pmap->pmap_pid, pmap->pmap_procname,
+		    (uint64_t)ptep_get_va(first_ptep), (uint64_t)*first_ptep, pmap);
+		if (length > 0) {
+			printf("%s", line);
+			(void)qcom_usb_debug_enqueue(line,
+			    (size_t)length < sizeof(line) ? (size_t)length : sizeof(line) - 1);
+		}
+		uintptr_t frames[12] = {0};
+		backtrace_info_t info = BTI_NONE;
+		unsigned int count = backtrace(frames, 12, NULL, &info);
+		for (unsigned int i = 0; i < count; i++) {
+			length = snprintf(line, sizeof(line), "K70 PMAP: free bt %u 0x%llx flags=0x%x\n",
+			    i, (uint64_t)frames[i], (unsigned int)info);
+			if (length > 0) {
+				printf("%s", line);
+				(void)qcom_usb_debug_enqueue(line,
+				    (size_t)length < sizeof(line) ? (size_t)length : sizeof(line) - 1);
+			}
+		}
+#endif
 
 		panic("%s: Found at least one mapping to %#llx. First PTEP (%p) is a "
 		    "%s CPU mapping (pmap: %p)",
