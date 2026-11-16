@@ -1,3 +1,4 @@
+#include "K70BootLog.h"
 /* SPDX-License-Identifier: MIT */
 /* K70 wiring of the shared SM8550 GMU implementation. Constants are verified
  * against the retained original K70 DT and the pinned mainline policy. See
@@ -164,7 +165,7 @@ class K70GpuStartup final {
             stop(result==NativeAdrenoRingFenceTimeout?kIOReturnTimeout:kIOReturnIOError);
     }
     IOReturn scmCall(unsigned cmd,uint64_t pa=0,uint64_t bytes=0) {
-        IOLog("K70 GPU: SCM begin command %u pa=0x%llx bytes=%llu\n",cmd,
+        K70BootLog("K70 GPU: SCM begin command %u pa=0x%llx bytes=%llu\n",cmd,
             (unsigned long long)pa,(unsigned long long)bytes);
         const uint64_t began=ringNow(nullptr)/1000;
         if(!k70_scm_begin(&scm_,cmd,pa,bytes,began))return stop(kIOReturnNotReady);
@@ -175,7 +176,7 @@ class K70GpuStartup final {
             report_.scm_state=k70_scm_tick(&scm_,now,k70_scm_arm64_invoke,nullptr);
             report_.scm_x0=(int64_t)scm_.result.x[0];report_.scm_x1=scm_.result.x[1];
             if(report_.scm_state!=K70_SCM_PENDING) {
-                IOLog("K70 GPU: SCM command %u state %u x0=0x%llx x1=0x%llx x6=0x%llx calls=%u resumes=%u busy=%u elapsed=%llums\n",
+                K70BootLog("K70 GPU: SCM command %u state %u x0=0x%llx x1=0x%llx x6=0x%llx calls=%u resumes=%u busy=%u elapsed=%llums\n",
                     cmd,report_.scm_state,(unsigned long long)scm_.result.x[0],
                     (unsigned long long)scm_.result.x[1],(unsigned long long)scm_.result.x[6],
                     scm_.invocations,scm_.resumes,scm_.busy_count,(unsigned long long)(now-began));
@@ -248,9 +249,9 @@ class K70GpuStartup final {
     }
     IOReturn stop(IOReturn status) {
         report_.status=status;
-        IOLog("K70 GPU: execution stage %u status 0x%x GMU %u context %u firmware %u GX %u\n",
+        K70BootLog("K70 GPU: execution stage %u status 0x%x GMU %u context %u firmware %u GX %u\n",
             report_.stage,status,report_.gmu_status,report_.context_step,report_.firmware_error,report_.gx_status);
-        IOLog("K70 GPU: fence submitted %u observed %u scratch 0x%x ZAP %u ready %u\n",
+        K70BootLog("K70 GPU: fence submitted %u observed %u scratch 0x%x ZAP %u ready %u\n",
             report_.submitted_fence,report_.observed_fence,report_.scratch_value,
             report_.zap_authenticated?1:0,report_.execution_ready?1:0);
         return status;
@@ -287,18 +288,18 @@ public:
         NativeAdrenoFirmwareView validated{};
         IOReturn status=NativeAdrenoFirmware::validate(native_adreno_firmware_image,
             native_adreno_firmware_image_size,&rules,&validated);
-        IOLog("K70 GPU: firmware GMU status 0x%x bytes %llu\n",status,
+        K70BootLog("K70 GPU: firmware GMU status 0x%x bytes %llu\n",status,
             (unsigned long long)native_adreno_firmware_image_size);
         if(status)return stop(status);
         if(execution) {
             status=NativeAdrenoFirmware::validate(native_adreno_sqe_firmware_image,
                 native_adreno_sqe_firmware_image_size,&k70_sqe_rules,&sqe_);
-            IOLog("K70 GPU: firmware SQE status 0x%x bytes %llu\n",status,
+            K70BootLog("K70 GPU: firmware SQE status 0x%x bytes %llu\n",status,
                 (unsigned long long)native_adreno_sqe_firmware_image_size);
             if(status)return stop(status);
             status=NativeAdrenoFirmware::validate(native_adreno_zap_image,
                 native_adreno_zap_image_size,&k70_zap_rules,&zap_);
-            IOLog("K70 GPU: firmware Xiaomi ZAP status 0x%x bytes %llu\n",status,
+            K70BootLog("K70 GPU: firmware Xiaomi ZAP status 0x%x bytes %llu\n",status,
                 (unsigned long long)native_adreno_zap_image_size);
             if(status)return stop(status);
             if(!k70_zap_plan(zap_.bytes,zap_.length,&zap_plan_))return stop(kIOReturnInvalid);
@@ -355,18 +356,18 @@ public:
         report_.stage=K70GpuIdle;
         uint32_t reset=0,hfi=0,retention=0,busy=0;
         if(readCore(REG_GMU_CM3_SYSRESET,&reset)) {
-            IOLog("K70 GPU: idle read failed GMU SYSRESET\n"); return stop(kIOReturnIOError);
+            K70BootLog("K70 GPU: idle read failed GMU SYSRESET\n"); return stop(kIOReturnIOError);
         }
         if(readCore(REG_GMU_HFI_CTRL_STATUS,&hfi)) {
-            IOLog("K70 GPU: idle read failed GMU HFI_CTRL_STATUS\n"); return stop(kIOReturnIOError);
+            K70BootLog("K70 GPU: idle read failed GMU HFI_CTRL_STATUS\n"); return stop(kIOReturnIOError);
         }
         if(device_.io.read32(device_.io.cookie,ShengGmuCxMisc,REG_CX_MISC_TCM_RET_CNTL*4,&retention)) {
-            IOLog("K70 GPU: idle read failed CX_MISC TCM_RET_CNTL\n"); return stop(kIOReturnIOError);
+            K70BootLog("K70 GPU: idle read failed CX_MISC TCM_RET_CNTL\n"); return stop(kIOReturnIOError);
         }
         if(device_.io.read32(device_.io.cookie,ShengGmuRscc,REG_RSCC_SEQ_BUSY_DRV0*4,&busy)) {
-            IOLog("K70 GPU: idle read failed RSCC SEQ_BUSY\n"); return stop(kIOReturnIOError);
+            K70BootLog("K70 GPU: idle read failed RSCC SEQ_BUSY\n"); return stop(kIOReturnIOError);
         }
-        IOLog("K70 GPU: idle reset=0x%x hfi=0x%x retention=0x%x rscc_busy=0x%x\n",
+        K70BootLog("K70 GPU: idle reset=0x%x hfi=0x%x retention=0x%x rscc_busy=0x%x\n",
             reset,hfi,retention,busy);
         if(reset!=1 || hfi || retention || busy)return stop(kIOReturnBusy);
         if(!map(SHENG_GPU_SMMU_BASE,SHENG_GPU_SMMU_BYTES,smmu_map_))return stop(kIOReturnNoMemory);

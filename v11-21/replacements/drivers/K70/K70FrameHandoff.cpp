@@ -1,3 +1,4 @@
+#include "K70BootLog.h"
 /* SPDX-License-Identifier: MIT */
 #include "K70FrameHandoff.h"
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -35,7 +36,7 @@ IOReturn arm(task_t task,const NGPArm &a) {
     }
     if(!g.owner) {task_reference(task);g.owner=task;}
     g.gate.armed=1;
-    IOLog("K70 FRAME: GPU scanout armed by backboardd\n");
+    K70BootLog("K70 FRAME: GPU scanout armed by backboardd\n");
     return kIOReturnSuccess;
 }
 }
@@ -134,10 +135,10 @@ extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *
             if(!done.status && (done.flags&NGP_QUIESCENT)) {
                 ++g.completed;
                 if(g.completed==1 || g.completed%120==0)
-                    IOLog("K70 FRAME: GPU completed %llu sequence %llu layers %u\n",
+                    K70BootLog("K70 FRAME: GPU completed %llu sequence %llu layers %u\n",
                         (unsigned long long)g.completed,(unsigned long long)done.sequence,g.frame.count);
             } else {
-                IOLog("K70 FRAME: GPU completion failed sequence %llu status 0x%x flags 0x%x state %u\n",
+                K70BootLog("K70 FRAME: GPU completion failed sequence %llu status 0x%x flags 0x%x state %u\n",
                     (unsigned long long)done.sequence,done.status,done.flags,g.gate.state);
             }
             status=kIOReturnSuccess;

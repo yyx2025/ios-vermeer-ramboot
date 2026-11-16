@@ -1,3 +1,4 @@
+#include "K70BootLog.h"
 /* SPDX-License-Identifier: MIT */
 #include "K70GpuBoot.h"
 #include "NativeAdrenoABI.h"
@@ -39,12 +40,12 @@ extern "C" IOReturn k70_gpu_boot(const K70GpuStartupConfig *config, K70GpuBootRe
     if(!report || !config)return kIOReturnBadArgument;
     *report={};
     auto stop=[&](IOReturn status){report->status=status;
-        IOLog("K70 GPU: boot stage %u status 0x%x published %u\n",report->stage,status,report->published?1:0);return status;};
+        K70BootLog("K70 GPU: boot stage %u status 0x%x published %u\n",report->stage,status,report->published?1:0);return status;};
     uint32_t expected=0;
     if(!__atomic_compare_exchange_n(&attempted,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
         return stop(kIOReturnBusy);
     report->stage=1;
-    IOLog("K70 GPU: loading original IOGPUFamily\n");
+    K70BootLog("K70 GPU: loading original IOGPUFamily\n");
     IOReturn status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOGPUFamily");
     if(status)return stop(status);
     const OSSymbol *name=OSSymbol::withCString("IOAcceleratorES");
@@ -56,7 +57,7 @@ extern "C" IOReturn k70_gpu_boot(const K70GpuStartupConfig *config, K70GpuBootRe
     if(!handle)return stop(kIOReturnNoResources);
     native_adreno_accelerator_static_init();
     const void *old_parent=k70_meta_bind_gpu(parent);
-    IOLog("K70 GPU: parent bind %p -> %p\n",(void *)old_parent,(void *)parent);
+    K70BootLog("K70 GPU: parent bind %p -> %p\n",(void *)old_parent,(void *)parent);
     status=OSMetaClass::postModLoad(handle);
     if(status)return stop(status);
     if(native_adreno_accelerator_instance_size()!=136)return stop(kIOReturnInvalid);

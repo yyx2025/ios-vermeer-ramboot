@@ -43,7 +43,7 @@ def compile(source,output,cpp=True,native_relative=None):
     args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in selected]
     # Source replacement headers take precedence over the archived tree.
     source_root=W/'replacements/xnu'
-    inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',source_root/'pexpert',
+    inc=[W/'replacements/drivers/K70',source_root/'libkern',source_root/'iokit',source_root/'osfmk',source_root/'pexpert',
          *[X/'xnu'/p for p in ('libkern','iokit','osfmk','bsd','pexpert')],W/'SoftwareAES']
     # v11.31: QcomXnuUsbDebug (polled DWC3 CDC-ACM console). The module is
     # freestanding except for three XNU services: ml_io_map, PE_parse_boot_argn
