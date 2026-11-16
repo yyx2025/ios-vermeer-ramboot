@@ -122,6 +122,8 @@ static void
 k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 {
 	processor_t boot = cpu_to_processor(master_cpu);
+	unsigned int attempt;
+	uint64_t polls = 0;
 	int active;
 
 	if (boot == PROCESSOR_NULL) {
@@ -136,7 +138,41 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 	}
 
 	printf("K70 USB: controller takeover starting (DWC3 polled CDC-ACM)\n");
-	active = qcom_usb_debug_init();
+	/* The inherited state is whatever ABL left behind, and the first seconds
+	 * after the jump are not necessarily the settled state: the PHY PLL can
+	 * still be locking and the power domain can still be ramping.  v11.27 made
+	 * exactly one attempt and, if it lost that race, the port stayed dead for
+	 * the whole session.  Retry with a growing pause instead; each gate in the
+	 * module is a pure read-back test, so a retry costs a few microseconds and
+	 * can never corrupt the controller. */
+	active = 0;
+	for (attempt = 0; attempt < 6; attempt++) {
+		struct qcom_usb_debug_status s;
+		uint64_t deadline;
+
+		if (attempt) {
+			clock_interval_to_deadline(1u << (attempt - 1), NSEC_PER_SEC,
+			    &deadline);
+			(void)assert_wait_deadline(&k70_usb_wait_channel,
+			    THREAD_UNINT, deadline);
+			thread_block(THREAD_CONTINUE_NULL);
+		}
+		active = qcom_usb_debug_init();
+		qcom_usb_debug_get_status(&s);
+		printf("K70 USB: attempt %u %s phase=%u error=%u qcom=%u domain=%u\n",
+		    attempt, active ? "active" : "refused", s.phase, s.error,
+		    s.qcom_result, s.domain_result);
+		if (active) {
+			break;
+		}
+		/* One refusal is final: GCTL[13:12] is not 2, so the controller is not
+		 * in device mode -- ABL either switched it to host or shut it down.
+		 * No amount of waiting brings it back; that needs our own power and
+		 * clock bring-up, which is a separate stage. */
+		if (s.error == 8 /* CORE_NOT_DEVICE */) {
+			break;
+		}
+	}
 	k70_usb_describe(active ? "active" : "refused");
 	if (!active) {
 		printf("K70 USB: not running; host will keep seeing no device\n");
@@ -160,6 +196,11 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 		clock_interval_to_deadline(5, NSEC_PER_MSEC, &deadline);
 		(void)assert_wait_deadline(&k70_usb_wait_channel, THREAD_UNINT, deadline);
 		thread_block(THREAD_CONTINUE_NULL);
+		/* One line a minute, so a boot log read the next morning still shows
+		 * whether the port was alive the whole time. */
+		if ((++polls % 12000u) == 0) {
+			k70_usb_describe("alive");
+		}
 	}
 	k70_usb_active = 0;
 

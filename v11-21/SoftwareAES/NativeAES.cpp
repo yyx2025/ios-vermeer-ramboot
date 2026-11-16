@@ -255,27 +255,45 @@ extern kmod_info_t g_kernel_kmod_info;
 extern "C" void k70_aes_static_init(void) __asm__("__GLOBAL__sub_I_NativeAES.cpp");
 extern "C" IOReturn k70_aes_start(void)
 {
+  /* v11.28: one line per step. v11.27 died right after the first line of this
+   * function and the panel gave no clue which call it was inside, because the
+   * caller's "K70 AES: startup status" line never printed. Every stage below
+   * now announces itself, so the next screenshot names the exact call. */
   IOLog("K70 AES: loading original iOS16 crypto family\n");
   IOReturn status = OSKextLoadKextWithIdentifier("com.apple.iokit.IOCryptoAcceleratorFamily");
+  IOLog("K70 AES: 1 kext load status 0x%x\n", status);
   if (status) return status;
   const OSSymbol *name = OSSymbol::withCString("IOAESAccelerator");
+  IOLog("K70 AES: 2 symbol %p\n", name);
   const OSMetaClass *parent = name ? OSMetaClass::getMetaClassWithName(name) : nullptr;
   if (name) name->release();
+  IOLog("K70 AES: 3 parent %p classsize 0x%x sizeof 0x%x\n", (void *)parent,
+        (unsigned)(parent ? parent->getClassSize() : 0u), (unsigned)sizeof(NativeAES));
   if (!parent || parent->getClassSize() != 0x120 || sizeof(NativeAES) != 0x120)
     return kIOReturnUnsupported;
   void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
+  IOLog("K70 AES: 4 preModLoad %p\n", handle);
   if (!handle) return kIOReturnNoResources;
   k70_aes_static_init();
+  IOLog("K70 AES: 5 static init done\n");
   status = OSMetaClass::postModLoad(handle);
+  IOLog("K70 AES: 6 postModLoad status 0x%x\n", status);
   if (status) return status;
   auto *service = new NativeAES;
+  IOLog("K70 AES: 7 new %p\n", service);
   if (!service) return kIOReturnNoMemory;
   if (!service->init()) { service->release(); return kIOReturnError; }
+  IOLog("K70 AES: 8 init ok\n");
   IOService *platform = IOService::getPlatform();
+  IOLog("K70 AES: 9 platform %p\n", platform);
   if (!service->attach(platform)) { service->release(); return kIOReturnNotAttached; }
+  IOLog("K70 AES: 10 attached\n");
   if (!service->start(platform)) {
     service->detach(platform); service->release(); return kIOReturnError;
   }
+  IOLog("K70 AES: 11 started registered=%u kat=%u interface=%u\n",
+        (unsigned)native_aes_registered, (unsigned)native_aes_kat_status,
+        (unsigned)native_aes_interface_status);
   // The registered service retains its original reference for the RAM boot.
   return native_aes_registered == 1 && native_aes_kat_status == 1 && native_aes_interface_status == 1
     ? kIOReturnSuccess : kIOReturnNotReady;

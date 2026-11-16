@@ -139,6 +139,12 @@ public:
 	bool          fConsolePaused;
 	struct vframe_refs fPendingRefs; /* owning refs, transferred with the record */
 	uint8_t       fPending[SWEET_FB_SWAP_REC_SIZE];     /* latest swap, not yet shown */
+	/* v11.28: one preallocated hand-off copy. The vsync timer used to
+	 * IOMallocData/IOFreeData this record on every flushed frame, which is a
+	 * 1 KiB alloc/free pair at display rate -- exactly the kind of churn that
+	 * fragments the kalloc zones of a kernel that is already running out of
+	 * headroom. It is written and read only by the single vsync thread. */
+	uint8_t      *fHandoff;
 	bool          fDirty;
 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
 
@@ -419,6 +425,10 @@ AppleCLCD::start(IOService *provider)
 	fStats = stats != 0;
 	fRowHash = (uint64_t *)IOMallocData(sizeof(uint64_t) * fHeight);
 	fRowCode = (uint32_t *)IOMallocData(sizeof(uint32_t) * fHeight);
+	fHandoff = (uint8_t *)IOMallocData(SWEET_FB_SWAP_REC_SIZE);
+	if (fHandoff == NULL) {
+		return false;
+	}
 	if (fRowHash != NULL && fRowCode != NULL && skip != 0) {
 		invalidateRows();
 		fRowSkip = true;
@@ -470,6 +480,10 @@ AppleCLCD::invalidateRows()
 void
 AppleCLCD::free()
 {
+	if (fHandoff != NULL) {
+		IOFreeData(fHandoff, SWEET_FB_SWAP_REC_SIZE);
+		fHandoff = NULL;
+	}
 	if (fRowHash != NULL) {
 		IOFreeData(fRowHash, sizeof(uint64_t) * fHeight);
 		fRowHash = NULL;
@@ -504,7 +518,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 	uint8_t *rec = NULL;
 	struct vframe_refs refs = {};
 	if (flush) {
-		rec = (uint8_t *)IOMallocData(SWEET_FB_SWAP_REC_SIZE);
+		rec = fb->fHandoff;
 		if (rec != NULL) {
 			memcpy(rec, fb->fPending, SWEET_FB_SWAP_REC_SIZE);
 			vframe_take(&fb->fPendingRefs,&refs);
@@ -515,7 +529,6 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 	if (rec != NULL) {
 		fb->present(rec,&refs);
 		vermeer_frame_release(&refs);
-		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
 	}
 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
 }

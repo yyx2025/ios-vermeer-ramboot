@@ -1,0 +1,123 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * One line every 15 s with the kernel's own page accounting, emitted to the
+ * panel console and mirrored on the USB CDC-ACM port.
+ *
+ * Why: a RAM-booted iOS keeps a 5.8 GiB root image resident, and everything
+ * else has to fit in what is left.  When the free pool collapses the system
+ * answers with jetsam, which the user sees as "the spinner comes back and the
+ * phone drops to the lock screen".  Without numbers that is indistinguishable
+ * from a GUI crash, so this reporter makes the two cases tell apart:
+ *
+ *   free falling, wire/inactive growing  -> memory pressure, jetsam incoming
+ *   free flat and healthy                -> the spinner was a crash, not memory
+ *
+ * The counters are the plain globals the VM already exports; reading them
+ * without the page-queue lock can, at worst, mix two adjacent samples, which
+ * is fine for a once-every-15-seconds trend line.  No snprintf here on
+ * purpose: this unit only includes the osfmk headers the USB console already
+ * proved, and formats its three numbers by hand.
+ */
+#include <mach/mach_types.h>
+#include <mach/clock_types.h>
+#include <mach/vm_param.h>
+#include <kern/clock.h>
+#include <kern/sched_prim.h>
+#include <kern/thread.h>
+#include <kern/misc_protos.h>
+#include <mach/thread_act.h>
+
+extern uint32_t vm_page_free_count;
+extern uint32_t vm_page_free_target;
+extern uint32_t vm_page_wire_count;
+extern uint32_t vm_page_active_count;
+extern uint32_t vm_page_inactive_count;
+extern uint32_t vm_page_speculative_count;
+
+extern void k70_usb_console_line(const char *text);
+
+static volatile int k70_mem_thread_started;
+static int k70_mem_wait_channel;
+
+#define K70_MEM_MB(pages) ((unsigned)(((uint64_t)(pages) * PAGE_SIZE) >> 20))
+
+static char *
+k70_mem_put(char *out, const char *text)
+{
+	while (*text) {
+		*out++ = *text++;
+	}
+	return out;
+}
+
+static char *
+k70_mem_put_u32(char *out, unsigned value)
+{
+	char digits[11];
+	unsigned int n = 0;
+
+	do {
+		digits[n++] = (char)('0' + (value % 10u));
+		value /= 10u;
+	} while (value);
+	while (n) {
+		*out++ = digits[--n];
+	}
+	return out;
+}
+
+static void
+k70_mem_thread(void *arg __unused, wait_result_t result __unused)
+{
+	unsigned int sample = 0;
+
+	for (;;) {
+		char line[96];
+		char *p = line;
+		uint64_t deadline;
+		unsigned free_mb = K70_MEM_MB(vm_page_free_count);
+		unsigned wire_mb = K70_MEM_MB(vm_page_wire_count);
+		unsigned inactive_mb = K70_MEM_MB(vm_page_inactive_count);
+
+		printf("K70 MEM: free=%uMB target=%uMB wire=%uMB active=%uMB inactive=%uMB spec=%uMB\n",
+		    free_mb, K70_MEM_MB(vm_page_free_target), wire_mb,
+		    K70_MEM_MB(vm_page_active_count), inactive_mb,
+		    K70_MEM_MB(vm_page_speculative_count));
+		/* Mirror every fourth sample: the panel is the record, the serial line
+		 * is for whoever is watching live. */
+		if ((sample++ & 3) == 0) {
+			p = k70_mem_put(p, "K70 MEM free=");
+			p = k70_mem_put_u32(p, free_mb);
+			p = k70_mem_put(p, "MB wire=");
+			p = k70_mem_put_u32(p, wire_mb);
+			p = k70_mem_put(p, "MB inactive=");
+			p = k70_mem_put_u32(p, inactive_mb);
+			p = k70_mem_put(p, "MB");
+			*p = 0;
+			k70_usb_console_line(line);
+		}
+		clock_interval_to_deadline(15, NSEC_PER_SEC, &deadline);
+		(void)assert_wait_deadline(&k70_mem_wait_channel, THREAD_UNINT, deadline);
+		thread_block(THREAD_CONTINUE_NULL);
+	}
+}
+
+/* Idempotent; never sleeps the caller. */
+int
+k70_mem_report_start(void)
+{
+	thread_t thread;
+	kern_return_t result;
+
+	if (__atomic_exchange_n(&k70_mem_thread_started, 1, __ATOMIC_ACQ_REL)) {
+		return 0;
+	}
+	result = kernel_thread_start(k70_mem_thread, NULL, &thread);
+	if (result != KERN_SUCCESS) {
+		__atomic_store_n(&k70_mem_thread_started, 0, __ATOMIC_RELEASE);
+		printf("K70 MEM: cannot create reporter thread: %d\n", result);
+		return -1;
+	}
+	thread_deallocate(thread);
+	return 1;
+}
