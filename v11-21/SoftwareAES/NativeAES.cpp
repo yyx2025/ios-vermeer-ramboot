@@ -336,7 +336,45 @@ IOReturn NativeAES::performAES(void *input, void *output, task_t task, unsigned 
                               IOAESIV *iv, IOAESOperation operation, IOAESKeyData *key,
                               IOAESCompletion callback, void *refcon)
 {
-  if (!task || !input || !output || !bytes) return kIOReturnBadArgument;
+  if (!task || !input || !output || !key || !iv || !bytes || (bytes & 15) ||
+      (key->bits != 128 && key->bits != 192 && key->bits != 256) ||
+      bytes > UINTPTR_MAX - reinterpret_cast<uintptr_t>(input) ||
+      bytes > UINTPTR_MAX - reinterpret_cast<uintptr_t>(output)) return kIOReturnBadArgument;
+  /* Kernel callers already supply accessible virtual buffers. Keep their
+   * software CBC request in that address domain instead of converting it to
+   * physical segments and back through copypv. User tasks retain the prepared
+   * descriptor path below; their pointers are never dereferenced here. The
+   * same NIST raw-interface KAT, IV and completion contracts still apply. */
+  if (task == kernel_task) {
+    const uintptr_t in=reinterpret_cast<uintptr_t>(input),out=reinterpret_cast<uintptr_t>(output);
+    if(in!=out && in<out+bytes && out<in+bytes)return kIOReturnBadArgument;
+    IOAESKeyData derived={};
+    if(key->selector==kNonceEntangleSelector && key->bits==128 && nonceEntangleKey(&derived)) {
+      __atomic_fetch_add(&native_aes_nonce_key_uses,1,__ATOMIC_RELAXED);key=&derived;
+    }
+    if(key->selector || (operation!=IOAESEncrypt && operation!=IOAESDecrypt)) {
+      __atomic_fetch_add(&native_aes_unsupported_key,1,__ATOMIC_RELAXED);
+      cc_clear(sizeof derived,&derived);return kIOReturnUnsupported;
+    }
+    const uint64_t entered=mach_absolute_time();
+    auto *buffer=static_cast<unsigned char *>(IOMalloc(4096));
+    if(!buffer){cc_clear(sizeof derived,&derived);return kIOReturnNoMemory;}
+    unsigned char chaining[16];memcpy(chaining,iv->bytes,16);IOReturn result=kIOReturnSuccess;
+    for(unsigned long long done=0;done<bytes;) {
+      const size_t count=static_cast<size_t>(bytes-done>4096?4096:bytes-done);
+      memcpy(buffer,static_cast<const unsigned char *>(input)+done,count);
+      if(cbc(buffer,buffer,count,chaining,*key,operation)){result=kIOReturnIOError;break;}
+      memcpy(static_cast<unsigned char *>(output)+done,buffer,count);done+=count;
+    }
+    if(!result) {
+      memcpy(iv->bytes,chaining,16);
+      __atomic_fetch_add(&native_aes_completed,1,__ATOMIC_RELAXED);
+      __atomic_fetch_add(&native_aes_bytes,bytes,__ATOMIC_RELAXED);
+      __atomic_fetch_add(&native_aes_ticks,mach_absolute_time()-entered,__ATOMIC_RELAXED);
+    }
+    cc_clear(4096,buffer);IOFree(buffer,4096);cc_clear(sizeof chaining,chaining);cc_clear(sizeof derived,&derived);
+    if(callback){callback(refcon,result);return kIOReturnSuccess;}return result;
+  }
   IOMemoryDescriptor *source = IOMemoryDescriptor::withAddressRange(
       reinterpret_cast<mach_vm_address_t>(input), bytes, kIODirectionOut, task);
   IOMemoryDescriptor *destination = IOMemoryDescriptor::withAddressRange(

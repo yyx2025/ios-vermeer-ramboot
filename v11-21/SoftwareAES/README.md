@@ -18,3 +18,11 @@ The provider still registers only after all existing tests succeed.
 v11.36 also reports direct CBC, descriptor/rejection contracts, and raw
 encrypt/decrypt results separately, including byte and IV comparisons against
 the existing public NIST vectors. No key material or request contents are logged.
+
+v11.36 hardware diagnostics isolated the failure to the raw buffer interface:
+its descriptor conversion returned success with incorrect bytes, while direct
+CBC and allocated descriptors passed. v11.37 keeps kernel-task raw requests in
+virtual memory with the same 4096-byte CBC chunks, IV and completion rules.
+Other tasks continue through prepared descriptors. Partial overlaps and invalid
+pointer lengths are rejected. Registration still requires all existing KATs;
+the underlying physical-segment copy defect remains a separate audit item.
