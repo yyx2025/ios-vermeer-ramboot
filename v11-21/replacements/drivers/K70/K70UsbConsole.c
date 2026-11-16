@@ -34,6 +34,7 @@
 
 static volatile int k70_usb_thread_started;
 static volatile int k70_usb_active;
+extern void k70_gpu_log_replay(void);
 static int k70_usb_wait_channel;
 
 /* One line on the panel console, so a boot that cannot reach USB still tells
@@ -82,7 +83,7 @@ k70_usb_console_line(const char *text)
 int
 k70_usb_console_active(void)
 {
-	return k70_usb_active;
+	return __atomic_load_n(&k70_usb_active, __ATOMIC_ACQUIRE);
 }
 
 /* The module calls this through a weak_import when the controller reaches
@@ -182,7 +183,7 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 		printf("K70 USB: not running; host will keep seeing no device\n");
 		goto done;
 	}
-	k70_usb_active = 1;
+	__atomic_store_n(&k70_usb_active, 1, __ATOMIC_RELEASE);
 	k70_usb_console_line("K70 USB console attached; host should enumerate a CDC-ACM port");
 
 	for (;;) {
@@ -195,6 +196,7 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 			break;
 		}
 		qcom_usb_debug_poll();
+		k70_gpu_log_replay();
 		/* 5 ms matches the module's documented worker cadence: fast enough
 		 * for bulk-IN windows at high speed, cheap enough between frames. */
 		clock_interval_to_deadline(5, NSEC_PER_MSEC, &deadline);
@@ -206,7 +208,7 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 			k70_usb_describe("alive");
 		}
 	}
-	k70_usb_active = 0;
+	__atomic_store_n(&k70_usb_active, 0, __ATOMIC_RELEASE);
 
 done:
 	thread_bind(PROCESSOR_NULL);
