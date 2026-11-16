@@ -155,6 +155,8 @@ class AGXDeviceUserClient : public IOUserClient {
     NativeAdrenoUserClient *core_=nullptr;   /* own core; deleted in free(), so a call that raced the close sees live_ false, never freed memory */
     unsigned slot_=NativeAdrenoMaxClients;
     char name_[20]{};
+    uint32_t reportedFailures_=0;
+    uint64_t submits_=0,fences_=0;
     /* One user-view descriptor per BO token, reused by every clientMemoryForType call. IOConnectUnmapMemory64 asks clientMemoryForType for
      * the descriptor again and unmaps only a mapping that belongs to THAT descriptor (kIOMapReference); a fresh descriptor per call made the
      * unmap a silent no-op, the user PTEs outlived BoCpuUnmap, and BoFree handed pages with a live user mapping to the VM:
@@ -170,7 +172,7 @@ class AGXDeviceUserClient : public IOUserClient {
     static IOReturn action(OSObject *target,void *reference,IOExternalMethodArguments *arguments);
     IOReturn run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
 public:
-    void setHandoffOnly() {handoffOnly_=true;}
+    void setHandoffOnly() {handoffOnly_=true;proc_selfname(name_,sizeof name_);}
     bool mount(bool kernel);
     friend IOReturn runCore(AGXDeviceUserClient *,uint32_t,const void *,size_t,void *,size_t);
     friend void nativeAdrenoMailboxPoller(void *,wait_result_t);
@@ -335,6 +337,7 @@ IOReturn AGXDeviceUserClient::clientClose()
     }
     IOLockUnlock(g.lock);
     if(mailbox)mailbox->release();
+    K70BootLog("K70 GPU: client close %s handoff %u status 0x%x submits %llu fences %llu\n",name_,handoffOnly_?1u:0u,status,(unsigned long long)submits_,(unsigned long long)fences_);
     if(!status)terminate();
     return status;
 }
@@ -356,7 +359,9 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
         if(!live_ && !handoffOnly_)return kIOReturnNotReady;
         IOMemoryDescriptor *scanout=native_gop_handoff_memory();
         if(!scanout)return kIOReturnNotReady;
-        *memory=scanout;                        /* already retained for the caller */
+        scanout->retain();                      /* handoff returns a borrowed descriptor */
+        *memory=scanout;
+        K70BootLog("K70 FRAME: scanout descriptor returned bytes %llu\n",(unsigned long long)scanout->getLength());
         *options=kIOMapAnywhere|kIOMapInhibitCache;   /* firmware framebuffer: device memory, never cached by the CPU */
         return kIOReturnSuccess;
     }
@@ -478,6 +483,18 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     native_adreno_metal_diag.calls=native_adreno_metal_diag.calls+1;
     native_adreno_metal_diag.last_selector=method;
     native_adreno_metal_diag.last_status=uint32_t(status);
+    if(!status && method==NativeAdrenoMethodSubmit && output && output_size==sizeof(NativeAdrenoAbiSubmitReply)) {
+        const uint64_t count=__atomic_add_fetch(&connection->submits_,1,__ATOMIC_RELAXED);
+        if(count<=3 || !(count%120))K70BootLog("K70 GPU: user submit %s count %llu fence %llu\n",connection->name_,(unsigned long long)count,(unsigned long long)static_cast<const NativeAdrenoAbiSubmitReply *>(output)->fence);
+    }
+    if(!status && method==NativeAdrenoMethodWaitFence && input && input_size==sizeof(NativeAdrenoAbiWaitFence)) {
+        const uint64_t count=__atomic_add_fetch(&connection->fences_,1,__ATOMIC_RELAXED);
+        if(count<=3 || !(count%120))K70BootLog("K70 GPU: user fence %s count %llu observed %llu\n",connection->name_,(unsigned long long)count,(unsigned long long)static_cast<const NativeAdrenoAbiWaitFence *>(input)->fence);
+    }
+    if(status && status!=kIOReturnTimeout) {
+        const uint32_t count=__atomic_add_fetch(&connection->reportedFailures_,1,__ATOMIC_RELAXED);
+        if(count<=16 || !(count%128))K70BootLog("K70 GPU: user method failed %s method %u status 0x%x count %u\n",connection->name_,method,status,count);
+    }
     return status;
 }
 IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size)
@@ -693,6 +710,8 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
         native_adreno_open_log_count=native_adreno_open_log_count+1;
     }
     if(type==NativeAdrenoHandoffOpenType) {
+        char who[20]={};proc_selfname(who,sizeof who);
+        K70BootLog("K70 GPU: handoff connection %s type 0x%x macf 0x%x resolver 0x%x attach %u\n",who,type,macf,resolver,attach_state);
         connection->setHandoffOnly();
         *handler=connection;
         return kIOReturnSuccess;
@@ -739,6 +758,7 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
     if(record)record->opens=record->opens+1;
     IOLockUnlock(g.lock);
     native_adreno_metal_diag.opens=native_adreno_metal_diag.opens+1;
+    K70BootLog("K70 GPU: client open %s slot %u macf 0x%x resolver 0x%x\n",opener,record?record->slot:0u,macf,resolver);
     *handler=connection;
     return kIOReturnSuccess;
 }

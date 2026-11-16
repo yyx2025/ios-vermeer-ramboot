@@ -20,12 +20,23 @@ struct Handoff {
     task_t owner=TASK_NULL;
     NGPMode mode{};NGPScaleSwap frame{};K70FrameGate gate{};
     uint64_t completed=0;
+    bool prepared=false;
 };
 Handoff g;
 bool allowed() {char who[32]={};proc_selfname(who,sizeof who);return !strcmp(who,"backboardd");}
 void dropViews() {for(auto &m:g.views)if(m) {m->release();m=nullptr;}}
+/* Preparation must precede the frame that creating the device permits
+ * backboardd to send. CPU stores and console muting finish under this gate. */
+void activate() {
+    if(g.prepared && !g.gate.armed && vermeer_console_muted && g.gate.state==K70_FRAME_IDLE) {
+        g.prepared=false;
+        g.gate.armed=1;
+        K70BootLog("K70 FRAME: GPU scanout armed by backboardd\n");
+        IOLockWakeup(g.lock,&g.gate,false);
+    }
+}
 IOReturn arm(task_t task,const NGPArm &a) {
-    if(a.version!=NGP_VERSION || a.reserved || !vermeer_console_muted || g.gate.state!=K70_FRAME_IDLE ||
+    if(a.version!=NGP_VERSION || a.reserved || g.gate.state!=K70_FRAME_IDLE ||
        (g.owner && g.owner!=task))return kIOReturnBadArgument;
     constexpr size_t bytes=(size_t(1125)*2436*4+16383)&~size_t(16383);
     for(unsigned i=0;i<NGP_MAX_LAYERS;++i)if(!g.snapshot[i]) {
@@ -35,8 +46,9 @@ IOReturn arm(task_t task,const NGPArm &a) {
         bzero(g.snapshot[i]->getBytesNoCopy(),bytes);
     }
     if(!g.owner) {task_reference(task);g.owner=task;}
-    g.gate.armed=1;
-    K70BootLog("K70 FRAME: GPU scanout armed by backboardd\n");
+    g.prepared=true;
+    K70BootLog("K70 FRAME: GPU presenter prepared console_muted %u\n",vermeer_console_muted?1u:0u);
+    activate();
     return kIOReturnSuccess;
 }
 }
@@ -46,6 +58,7 @@ extern "C" IOReturn k70_frame_register(IOMemoryDescriptor *memory,uint64_t pa,ui
        memory->getLength()<uint64_t(stride)*h || memory->getLength()%PAGE_SIZE)return kIOReturnBadArgument;
     g.lock=IOLockAlloc();if(!g.lock)return kIOReturnNoMemory;
     memory->retain();g.scanout=memory;g.mode={NGP_VERSION,NGP_BGRX8888,w,h,stride,memory->getLength()};
+    K70BootLog("K70 FRAME: scanout registered %ux%u stride %u bytes %llu\n",w,h,stride,(unsigned long long)memory->getLength());
     return kIOReturnSuccess;
 }
 extern "C" unsigned k70_frame_offer(const K70FrameInput *input,unsigned count)
@@ -94,6 +107,7 @@ extern "C" void k70_frame_cpu_end(void)
 {
     /* Publish panel stores before ARM or another owner can proceed. */
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    activate();
     IOLockUnlock(g.lock);
 }
 extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void)
@@ -113,7 +127,7 @@ extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *
         NGPWait wait{};memcpy(&wait,in,sizeof wait);
         if(wait.timeout_ms && wait.timeout_ms<=1000 && g.gate.state!=K70_FRAME_QUARANTINED) {
             uint64_t deadline=0;clock_interval_to_deadline((uint32_t)wait.timeout_ms,kMillisecondScale,&deadline);
-            while(g.gate.armed && g.gate.state==K70_FRAME_IDLE) {
+            while((g.prepared || g.gate.armed) && g.gate.state==K70_FRAME_IDLE) {
                 if(IOLockSleepDeadline(g.lock,&g.gate,deadline,THREAD_UNINT)==THREAD_TIMED_OUT)break;
             }
             status=kIOReturnTimeout;
@@ -144,5 +158,7 @@ extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *
             status=kIOReturnSuccess;
         }
     }
+    if(op==NGP_METHOD_MODE || op==NGP_METHOD_ARM || (status && status!=kIOReturnTimeout))
+        K70BootLog("K70 FRAME: handoff method %u status 0x%x prepared %u armed %u state %u\n",op,status,g.prepared?1u:0u,g.gate.armed,g.gate.state);
     IOLockUnlock(g.lock);return status;
 }

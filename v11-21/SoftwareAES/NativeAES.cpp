@@ -137,6 +137,7 @@ static bool knownAnswerTest(NativeAES *provider)
     result = result && !cbc(output, output, 16, iv, wideKeys[n], IOAESDecrypt) && !memcmp(output, input, 16);
   }
   IOBufferMemoryDescriptor *source = IOBufferMemoryDescriptor::withCapacity(128, kIODirectionInOut);
+  K70BootLog("K70 AES: selftest direct CBC128/192/256 split/inplace %u\n",result?1u:0u);
   IOBufferMemoryDescriptor *destination = IOBufferMemoryDescriptor::withCapacity(128, kIODirectionInOut);
   IOAESIV publicIV;
   for (unsigned i = 0; i < 16; ++i) publicIV.bytes[i] = static_cast<unsigned char>(i);
@@ -150,6 +151,7 @@ static bool knownAnswerTest(NativeAES *provider)
     !provider->performAES(source, destination, 64, &publicIV, IOAESEncrypt, &key, 16, 32, callback, &completion) &&
     destination->readBytes(32, output, 64) == 64 && !memcmp(output, expected, 64) &&
     !memcmp(publicIV.bytes, expected + 48, 16) && completion.count == 1 && completion.status == 0;
+  K70BootLog("K70 AES: selftest descriptor encrypt %u callback %u status 0x%x\n",interface?1u:0u,completion.count,completion.status);
   key.selector = 2001; // Original hardware-key selector, deliberately unsupported.
   interface = interface && provider->performAES(source, destination, 64, &publicIV,
     IOAESEncrypt, &key, 16, 32, callback, &completion) == kIOReturnUnsupported && completion.count == 1 &&
@@ -158,12 +160,24 @@ static bool knownAnswerTest(NativeAES *provider)
   key.selector = 0;
   interface = interface && provider->performAES(source, destination, 64, &publicIV,
     IOAESEncrypt, &key, 16, 80, callback, &completion) == kIOReturnBadArgument && completion.count == 1;
+  K70BootLog("K70 AES: selftest rejection contracts %u\n",interface?1u:0u);
   for (unsigned i = 0; i < 16; ++i) publicIV.bytes[i] = static_cast<unsigned char>(i);
-  interface = interface && !provider->performAES(const_cast<unsigned char *>(input), output, kernel_task,
-    64, &publicIV, IOAESEncrypt, &key, nullptr, nullptr) && !memcmp(output, expected, 64);
+  if(interface) {
+    const IOReturn status=provider->performAES(const_cast<unsigned char *>(input),output,kernel_task,
+      64,&publicIV,IOAESEncrypt,&key,nullptr,nullptr);
+    const bool equal=!status && !memcmp(output,expected,64);
+    K70BootLog("K70 AES: selftest raw encrypt status 0x%x bytes_equal %u\n",status,equal?1u:0u);
+    interface=equal;
+  }
   for (unsigned i = 0; i < 16; ++i) publicIV.bytes[i] = static_cast<unsigned char>(i);
-  interface = interface && !provider->performAES(output, output, kernel_task, 64, &publicIV,
-    IOAESDecrypt, &key, nullptr, nullptr) && !memcmp(output, input, 64) && !memcmp(publicIV.bytes, expected + 48, 16);
+  if(interface) {
+    const IOReturn status=provider->performAES(output,output,kernel_task,64,&publicIV,
+      IOAESDecrypt,&key,nullptr,nullptr);
+    const bool equal=!status && !memcmp(output,input,64);
+    const bool ivEqual=!status && !memcmp(publicIV.bytes,expected+48,16);
+    K70BootLog("K70 AES: selftest raw inplace decrypt status 0x%x bytes_equal %u iv_equal %u\n",status,equal?1u:0u,ivEqual?1u:0u);
+    interface=equal && ivEqual;
+  }
   native_aes_interface_status = interface ? 1 : 2;
   if (source) source->release();
   if (destination) destination->release();

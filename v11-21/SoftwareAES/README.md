@@ -15,3 +15,6 @@ Build and interface details: [documentation](https://unixnu.com/drivers/software
 K70 iOS16 startup diagnostics mirror each load/init/start step and the
 existing NIST CBC/descriptor self-test result to the enqueue-only USB log.
 The provider still registers only after all existing tests succeed.
+v11.36 also reports direct CBC, descriptor/rejection contracts, and raw
+encrypt/decrypt results separately, including byte and IV comparisons against
+the existing public NIST vectors. No key material or request contents are logged.

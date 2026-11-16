@@ -301,6 +301,9 @@ assert b'VERMEER FB: logical canvas 1125x2436 scaled to full panel' in blob
 assert '_k70_usb_console_start' in names, 'missing USB console entry point'
 assert '_qcom_usb_debug_init' in names and '_qcom_usb_debug_poll' in names, 'missing QUD backend'
 assert '_dwc3_init' in names and '_QcomUsbDomainInstall' in names, 'missing DWC3/SMMU units'
+assert '_vermeer_debug_copy' in names, 'missing retained console ring API'
+assert b'K70 FRAME: GPU presenter prepared console_muted %u' in blob
+assert b'K70 AES: selftest raw encrypt status 0x%x bytes_equal %u' in blob
 for text in (b'QCOM XNU USB CDC ACM v1', b'K70 USB: controller takeover starting',
              b'K70 USB console attached'):
     assert text in blob, 'missing USB console string ' + text.decode()

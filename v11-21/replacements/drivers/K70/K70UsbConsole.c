@@ -35,6 +35,8 @@
 static volatile int k70_usb_thread_started;
 static volatile int k70_usb_active;
 extern void k70_gpu_log_replay(void);
+/* Retained nonblocking console ring ABI, independent consumer cursor. */
+extern unsigned vermeer_debug_copy(uint64_t *, char *, unsigned);
 static int k70_usb_wait_channel;
 
 /* One line on the panel console, so a boot that cannot reach USB still tells
@@ -122,6 +124,7 @@ boot_progress_persist(const char *text, uint32_t colour)
 static void
 k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 {
+    uint64_t console_cursor = 0;
 	processor_t boot = cpu_to_processor(master_cpu);
 	unsigned int attempt;
 	uint64_t polls = 0;
@@ -197,6 +200,13 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 		}
 		qcom_usb_debug_poll();
 		k70_gpu_log_replay();
+		/* No console writes here: forwarding cannot feed its own log ring.
+		 * A bounded copy keeps controller servicing at its normal cadence. */
+		{
+			char block[256];
+			const unsigned n = vermeer_debug_copy(&console_cursor, block, sizeof(block));
+			if (n) (void)qcom_usb_debug_enqueue(block, n);
+		}
 		/* 5 ms matches the module's documented worker cadence: fast enough
 		 * for bulk-IN windows at high speed, cheap enough between frames. */
 		clock_interval_to_deadline(5, NSEC_PER_MSEC, &deadline);
