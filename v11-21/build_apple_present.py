@@ -143,7 +143,7 @@ for relative,(output,cpp) in units.items():
     target=object_path(output)
     compile(W/'replacements/xnu'/relative,target,cpp,relative)
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService',
-             'K70MetaBind'):
+             'K70MetaBind','K70FrameHandoff'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
 # v11.31 USB CDC-ACM console. Ownership split is the module's: the freestanding
 # DWC3 core knows nothing about Qualcomm or XNU, the SoC layer owns GCC/DWC3/QSMMU

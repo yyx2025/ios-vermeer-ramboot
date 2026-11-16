@@ -164,6 +164,8 @@ class K70GpuStartup final {
             stop(result==NativeAdrenoRingFenceTimeout?kIOReturnTimeout:kIOReturnIOError);
     }
     IOReturn scmCall(unsigned cmd,uint64_t pa=0,uint64_t bytes=0) {
+        IOLog("K70 GPU: SCM begin command %u pa=0x%llx bytes=%llu\n",cmd,
+            (unsigned long long)pa,(unsigned long long)bytes);
         const uint64_t began=ringNow(nullptr)/1000;
         if(!k70_scm_begin(&scm_,cmd,pa,bytes,began))return stop(kIOReturnNotReady);
         /* A tick issues at most one SMC. Both the pure state machine and this
@@ -172,8 +174,13 @@ class K70GpuStartup final {
             const uint64_t now=ringNow(nullptr)/1000;
             report_.scm_state=k70_scm_tick(&scm_,now,k70_scm_arm64_invoke,nullptr);
             report_.scm_x0=(int64_t)scm_.result.x[0];report_.scm_x1=scm_.result.x[1];
-            if(report_.scm_state!=K70_SCM_PENDING)
+            if(report_.scm_state!=K70_SCM_PENDING) {
+                IOLog("K70 GPU: SCM command %u state %u x0=0x%llx x1=0x%llx x6=0x%llx calls=%u resumes=%u busy=%u elapsed=%llums\n",
+                    cmd,report_.scm_state,(unsigned long long)scm_.result.x[0],
+                    (unsigned long long)scm_.result.x[1],(unsigned long long)scm_.result.x[6],
+                    scm_.invocations,scm_.resumes,scm_.busy_count,(unsigned long long)(now-began));
                 return report_.scm_state==K70_SCM_COMPLETE?kIOReturnSuccess:stop(kIOReturnIOError);
+            }
             if(scm_.next_try>now)IOSleep((unsigned)(scm_.next_try-now));
         }
         report_.scm_state=K70_SCM_INDETERMINATE;return stop(kIOReturnTimeout);
