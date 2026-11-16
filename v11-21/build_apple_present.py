@@ -256,7 +256,7 @@ for attempt in range(4):
     args+=['-Wl,-force_load,'+str(gpu),str(fw.with_suffix('.o')),str(asm.with_suffix('.o')),str(OUT/'NativeAES.late.o')]
     args+=[str(p) for p in qud_objects]
     # v11.31: runtime OSMetaClass superClassLink binding (GPU + AES).
-    args+=[str(OUT/'K70MetaBind.o')]
+    args+=[str(O/'K70MetaBind.o')]
     result=subprocess.run(['xcrun','clang++',*args],cwd=B,capture_output=True,text=True)
     (OUT/('link-pass'+str(attempt)+'.log')).write_text(result.stdout+result.stderr)
     print('Link pass',attempt,result.returncode,flush=True)
