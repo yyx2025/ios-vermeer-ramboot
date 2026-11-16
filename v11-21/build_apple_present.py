@@ -145,7 +145,8 @@ for name in ('usb/Dwc3.c','soc/QcomUsbQualify.c','soc/QcomUsbDmaDomain.c',
     target=OUT/('qud-'+Path(name).stem+'.o')
     compile(W/'replacements/qud'/name,target,False)
     qud_objects.append(target)
-compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False)
+compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False,
+        'osfmk/arm64/K70UsbConsole.c')
 qud_objects.append(OUT/'K70UsbConsole.o')
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
 
