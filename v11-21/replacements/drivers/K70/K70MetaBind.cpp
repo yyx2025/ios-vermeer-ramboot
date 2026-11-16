@@ -11,34 +11,32 @@
  * Bind the actual parent returned by getMetaClassWithName() just before
  * postModLoad.  The layout below is taken from this kernel's OSMetaClass.h
  * (vtable 0x00, reserved 0x08, superClassLink 0x10) and confirmed by the
- * postModLoad disassembly, so no private header has to be modified. */
-#include <libkern/c++/OSMetaClass.h>
-
+ * postModLoad disassembly.  The metaclass objects are declared as opaque byte
+ * arrays because OSMetaClass itself is abstract. */
 extern "C" {
-extern OSMetaClass k70_agx_meta __asm__("__ZN14AGXAccelerator10gMetaClassE");
-extern OSMetaClass k70_aes_meta __asm__("__ZN9NativeAES10gMetaClassE");
+extern unsigned char k70_agx_meta[] __asm__("__ZN14AGXAccelerator10gMetaClassE");
+extern unsigned char k70_aes_meta[] __asm__("__ZN9NativeAES10gMetaClassE");
 }
 
 namespace {
 constexpr unsigned kSuperClassLinkOffset = 0x10;
 
-const OSMetaClass *bind(OSMetaClass &meta, const OSMetaClass *parent)
+const void *bind(unsigned char *meta, const void *parent)
 {
-    if (!parent) return nullptr;
-    auto *link = reinterpret_cast<const OSMetaClass **>(
-        reinterpret_cast<char *>(&meta) + kSuperClassLinkOffset);
-    const OSMetaClass *previous = *link;
+    if (!meta || !parent) return nullptr;
+    auto *link = reinterpret_cast<const void **>(meta + kSuperClassLinkOffset);
+    const void *previous = *link;
     *link = parent;
     return previous;
 }
 }
 
-extern "C" const OSMetaClass *k70_meta_bind_gpu(const OSMetaClass *parent)
+extern "C" const void *k70_meta_bind_gpu(const void *parent)
 {
     return bind(k70_agx_meta, parent);
 }
 
-extern "C" const OSMetaClass *k70_meta_bind_aes(const OSMetaClass *parent)
+extern "C" const void *k70_meta_bind_aes(const void *parent)
 {
     return bind(k70_aes_meta, parent);
 }

@@ -17,7 +17,7 @@ extern "C" unsigned native_adreno_accelerator_instance_size(void);
 /* v11.31: the static initializer stores the `(absolute)` __PRELINK_INFO
  * address of IOAcceleratorES::gMetaClass as superClassLink.  Replace it with
  * the runtime metaclass before postModLoad walks the chain. */
-extern "C" const OSMetaClass *k70_meta_bind_gpu(const OSMetaClass *);
+extern "C" const void *k70_meta_bind_gpu(const void *);
 extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *,
     NativeAdrenoRing *, const NativeAdrenoRingClock *, const NativeAdrenoTimer *,
     const NativeAdrenoAbiDeviceInfo *, uint32_t, uint32_t);
@@ -55,7 +55,7 @@ extern "C" IOReturn k70_gpu_boot(const K70GpuStartupConfig *config, K70GpuBootRe
     void *handle=OSMetaClass::preModLoad(g_kernel_kmod_info.name);
     if(!handle)return stop(kIOReturnNoResources);
     native_adreno_accelerator_static_init();
-    const OSMetaClass *old_parent=k70_meta_bind_gpu(parent);
+    const void *old_parent=k70_meta_bind_gpu(parent);
     IOLog("K70 GPU: parent bind %p -> %p\n",(void *)old_parent,(void *)parent);
     status=OSMetaClass::postModLoad(handle);
     if(status)return stop(status);
