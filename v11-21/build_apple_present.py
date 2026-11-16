@@ -64,8 +64,9 @@ def compile(source,output,cpp=True,native_relative=None):
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
                        'K70UsbConsole.c', 'QcomXnuUsbDebug.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
-    if source.name == 'K70UsbConsole.c':
-        # <kern/thread.h> pulls osfmk/arm/simple_lock.h, which includes the
+    if source.name == 'K70UsbConsole.c' or 'replacements/qud' in str(source):
+        # <kern/thread.h> (directly, or through <IOKit/IOLib.h> for the
+        # allocator) pulls osfmk/arm/simple_lock.h, which includes the
         # generated <mach_ldebug.h>. That header only exists in the osfmk
         # build directory; the real XNU makefile gets it from the unit's cwd.
         # Point at it explicitly instead of moving cwd there, because the
