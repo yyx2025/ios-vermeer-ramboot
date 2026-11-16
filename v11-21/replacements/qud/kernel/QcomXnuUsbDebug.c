@@ -12,6 +12,7 @@
 #include <machine/machine_routines.h>
 #include <kern/cpu_number.h>
 #include <pexpert/pexpert.h>
+#include <IOKit/IOLib.h>
 
 #define NATIVE_CONTEXT_BYTES DWC3_CONTEXT_BYTES
 #define GCC_BYTES QUD_GCC_BYTES
@@ -34,16 +35,25 @@
  * Only the control opt-in may atomically install into this NULL global. */
 extern int (*PE_halt_restart)(unsigned int);
 
-static uint8_t usb_dma[DWC3_DMA_BYTES] __attribute__((aligned(DWC3_DMA_ALIGNMENT)));
-static uint8_t usb_tables[QUSB_DOMAIN_PT_BYTES] __attribute__((aligned(PAGE_BYTES)));
-static uint8_t usb_context[NATIVE_CONTEXT_BYTES] __attribute__((aligned(DWC3_CONTEXT_ALIGNMENT)));
+/* Arenas are allocated once at first init instead of living in the image.
+ *
+ * The module ships them as static arrays, which is correct for a kernel with
+ * spare __DATA.  This kernel has none: its __DATA ends exactly where the
+ * prelinked kext segment area begins, so every static byte pushes a prelinked
+ * component into a native segment and the RAM image can no longer be
+ * assembled ("Rebased component collides with native __DATA").  The contract
+ * is otherwise unchanged -- allocated once, never freed, resident until reset,
+ * and the DMA arena plus page tables must still be physically contiguous,
+ * which is what IOMallocContiguous provides and validate_static_pages
+ * re-verifies through AT S1E1R. */
+static uint8_t *usb_dma;
+static uint8_t *usb_tables;
+static uint8_t *usb_context;
 static volatile unsigned int usb_busy;
 static volatile unsigned int usb_diag_enabled, usb_diag_checkpoint, usb_diag_resetting, usb_diag_target;
 static volatile unsigned int usb_diag_mode, usb_diag_polling;
-static uint8_t usb_log_bytes[SOC_USB_LOG_BUFFER_BYTES];
-static struct soc_usb_buffer usb_log_buffer = {
-    .data = usb_log_bytes, .capacity = sizeof(usb_log_bytes)
-};
+static uint8_t *usb_log_bytes;
+static struct soc_usb_buffer usb_log_buffer;
 static uint64_t usb_log_replayed, usb_log_loss_reported;
 static struct {
     struct qcom_usb_debug_status status;
@@ -80,6 +90,26 @@ static void bytes_copy(void *to, const void *from, size_t bytes)
     const volatile uint8_t *s = from;
     while (bytes--) *d++ = *s++;
 }
+static int arena_alloc(void)
+{
+    IOPhysicalAddress physical;
+
+    if (usb_dma) return 1;
+    usb_dma = IOMallocContiguous(DWC3_DMA_BYTES, DWC3_DMA_ALIGNMENT, &physical);
+    usb_tables = IOMallocContiguous(QUSB_DOMAIN_PT_BYTES, PAGE_BYTES, &physical);
+    usb_context = IOMalloc(NATIVE_CONTEXT_BYTES);
+    usb_log_bytes = IOMalloc(SOC_USB_LOG_BUFFER_BYTES);
+    if (!usb_dma || !usb_tables || !usb_context || !usb_log_bytes) return 0;
+    /* Same starting state a zero-filled .bss array would have given us. */
+    bytes_zero(usb_dma, DWC3_DMA_BYTES);
+    bytes_zero(usb_tables, QUSB_DOMAIN_PT_BYTES);
+    bytes_zero(usb_context, NATIVE_CONTEXT_BYTES);
+    bytes_zero(usb_log_bytes, SOC_USB_LOG_BUFFER_BYTES);
+    usb_log_buffer.data = usb_log_bytes;
+    usb_log_buffer.capacity = SOC_USB_LOG_BUFFER_BYTES;
+    return 1;
+}
+
 static uint64_t counter(void)
 {
     uint64_t value;
@@ -235,7 +265,7 @@ static void backlog_drain_owned(void)
 }
 static void buffer_status_owned(void)
 {
-    native.status.buffer_capacity = sizeof(usb_log_bytes);
+    native.status.buffer_capacity = SOC_USB_LOG_BUFFER_BYTES;
     native.status.buffer_pending = soc_usb_buffer_pending(&usb_log_buffer);
     native.status.buffer_high_water = __atomic_load_n(&usb_log_buffer.high_water, __ATOMIC_RELAXED);
     native.status.buffer_accepted = __atomic_load_n(&usb_log_buffer.accepted, __ATOMIC_RELAXED);
@@ -554,7 +584,7 @@ static void dma_sync(void *cookie, void *cpu, size_t bytes,
     (void)cookie;
     if (usb_diag_polling && usb_diag_mode == 202u && direction == DWC3_FROM_DEVICE)
         diag_reset(0);
-    if (cache_sync(cpu, bytes, direction, usb_dma, sizeof(usb_dma)) &&
+    if (cache_sync(cpu, bytes, direction, usb_dma, DWC3_DMA_BYTES) &&
         usb_diag_polling && usb_diag_mode == 203u && direction == DWC3_FROM_DEVICE)
         diag_reset(0);
 }
@@ -562,7 +592,7 @@ static int clean_tables(void *cookie, void *cpu, QUSB_U32 bytes)
 {
     (void)cookie;
     if (deadline_expired()) return 0;
-    return cache_sync(cpu, bytes, DWC3_TO_DEVICE, usb_tables, sizeof(usb_tables));
+    return cache_sync(cpu, bytes, DWC3_TO_DEVICE, usb_tables, QUSB_DOMAIN_PT_BYTES);
 }
 static void core_trace(void *cookie, enum dwc3_trace event, uint32_t a, uint32_t b)
 {
@@ -755,6 +785,9 @@ int qcom_usb_debug_init(void)
             if (diagnostic == 2) diag_reset(0);
         }
     }
+    /* Allocate before taking the owner guard: the guard masks IRQ/FIQ and the
+     * allocator may sleep.  Nothing below can run without these arenas. */
+    if (!arena_alloc()) return 0;
     if (!acquire(&flags)) {
         if (usb_diag_enabled && native.status.phase == QCOM_USB_DEBUG_NOT_INITIALIZED) {
             fail(QCOM_USB_DEBUG_ACQUIRE_REFUSED, 0);
@@ -770,7 +803,7 @@ int qcom_usb_debug_init(void)
     }
     native.status.phase = QCOM_USB_DEBUG_PREPARING;
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_AFTER_ACQUIRE);
-    if (dwc3_context_bytes() > sizeof(usb_context)) {
+    if (dwc3_context_bytes() > NATIVE_CONTEXT_BYTES) {
         fail(QCOM_USB_DEBUG_CONTEXT_TOO_SMALL, 0); goto out;
     }
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_COUNTER_CACHE);
@@ -801,11 +834,11 @@ int qcom_usb_debug_init(void)
         fail(QCOM_USB_DEBUG_CACHE_GRANULE_UNSUPPORTED, 0); goto out;
     }
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_DATA_VTOP);
-    if (!validate_static_pages(usb_dma, sizeof(usb_dma), &native.status.dma_pa)) {
+    if (!validate_static_pages(usb_dma, DWC3_DMA_BYTES, &native.status.dma_pa)) {
         fail(QCOM_USB_DEBUG_DMA_NOT_CONTIGUOUS, 0); goto out;
     }
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_TABLE_VTOP);
-    if (!validate_static_pages(usb_tables, sizeof(usb_tables), &native.status.tables_pa)) {
+    if (!validate_static_pages(usb_tables, QUSB_DOMAIN_PT_BYTES, &native.status.tables_pa)) {
         fail(QCOM_USB_DEBUG_TABLES_NOT_CONTIGUOUS, 0); goto out;
     }
     native.status.dma_iova = QUSB_DOMAIN_IOVA;
@@ -847,7 +880,7 @@ int qcom_usb_debug_init(void)
          * checks high physical DMA/table addresses against SMMU output width.
          * No truncation, identity mapping or BYPASS fallback is used. */
         native.status.dma_address_width = (hwparams0 >> 24) & 0xffu;
-        if (!dma_addressable(native.status.dma_iova, sizeof(usb_dma), native.status.dma_address_width)) {
+        if (!dma_addressable(native.status.dma_iova, DWC3_DMA_BYTES, native.status.dma_address_width)) {
             fail(QCOM_USB_DEBUG_DMA_WIDTH_UNSUPPORTED, 0); goto out;
         }
     }
@@ -863,7 +896,7 @@ int qcom_usb_debug_init(void)
     native.domain_platform.clean_tables = clean_tables;
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_DOMAIN);
     domain_result = QcomUsbDomainInstall(&native.domain_platform, usb_tables, native.status.tables_pa,
-                                         sizeof(usb_tables), native.status.dma_pa, sizeof(usb_dma), &native.lease);
+                                         QUSB_DOMAIN_PT_BYTES, native.status.dma_pa, DWC3_DMA_BYTES, &native.lease);
     native.status.domain_result = (uint32_t)domain_result;
     native.status.domain_stage = native.lease.stage;
     native.status.domain_bank = native.lease.cb;
@@ -904,8 +937,8 @@ int qcom_usb_debug_init(void)
     platform.barrier = barrier; platform.trace = core_trace;
     native.core = (struct dwc3 *)(void *)usb_context;
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_CORE_INIT);
-    ret = dwc3_init(usb_context, sizeof(usb_context), &platform, &identity, usb_dma,
-                         native.status.dma_iova, sizeof(usb_dma));
+    ret = dwc3_init(usb_context, NATIVE_CONTEXT_BYTES, &platform, &identity, usb_dma,
+                         native.status.dma_iova, DWC3_DMA_BYTES);
     if (ret || native.status.io_failed) {
         fail(QCOM_USB_DEBUG_CORE_INIT_FAILED, ret); (void)restore_after_failure(); ret = 0; goto out;
     }
@@ -1483,7 +1516,7 @@ void qcom_usb_debug_panic_drain(void)
         p = append_text(p, " dropped_at_start=");
         p = append_decimal(p, soc_usb_buffer_dropped(&usb_log_buffer) + dwc3_dropped(native.core));
         p = append_text(p, " buffer_capacity=");
-        p = append_decimal(p, sizeof(usb_log_bytes));
+        p = append_decimal(p, SOC_USB_LOG_BUFFER_BYTES);
         *p++ = '\n';
         announcement_bytes = (size_t)(p - announcement);
     }

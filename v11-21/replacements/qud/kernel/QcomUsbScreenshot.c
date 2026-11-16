@@ -1,8 +1,22 @@
 /* SPDX-License-Identifier: MIT */
 #include "QcomUsbScreenshot.h"
 #include "QcomUsbControl.h"
+#include <IOKit/IOLib.h>
 
-static uint8_t pixels[QUD_SCREENSHOT_MAX_BYTES];
+/* 16 MiB of static snapshot storage would land in the kernel image, and this
+ * kernel's __DATA has no room at all (see the arena note in
+ * QcomXnuUsbDebug.c).  The buffer is only needed when the framed control
+ * channel asks for a screenshot, so allocate it on first use; without the
+ * control channel it is never allocated at all. */
+static uint8_t *pixels;
+
+static int pixels_ensure(void)
+{
+    if (pixels) return 1;
+    pixels = IOMalloc(QUD_SCREENSHOT_MAX_BYTES);
+    return pixels != 0;
+}
+
 static unsigned provider_state;
 static qcom_usb_screenshot_capture provider;
 static void *provider_cookie;
@@ -75,7 +89,8 @@ int qcom_usb_shot_capture(uint32_t frame)
     uint32_t w = 0, h = 0, at = 0, encoded = 0;
     qcom_usb_shot_cancel();
     if (__atomic_load_n(&provider_state, __ATOMIC_ACQUIRE) != 2u) return -1;
-    if (!provider(provider_cookie, pixels, sizeof(pixels), &w, &h) || !dimensions(w, h)) return -2;
+    if (!pixels_ensure()) return -1;
+    if (!provider(provider_cookie, pixels, QUD_SCREENSHOT_MAX_BYTES, &w, &h) || !dimensions(w, h)) return -2;
     image.width = w; image.height = h; image.bytes = w * h * 3;
     image.frame = frame; image.crc32 = sxnu_control_crc32(pixels, image.bytes);
     while (at < image.bytes / 3) { at += run_length(at); encoded += 4; }
