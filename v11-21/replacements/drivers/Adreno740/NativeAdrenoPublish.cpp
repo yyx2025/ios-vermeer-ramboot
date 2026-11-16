@@ -434,8 +434,7 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
                 *memory=descriptor;*options=kIOMapAnywhere|kIOMapWriteCombineCache;
                 native_adreno_view_diag[1]=native_adreno_view_diag[1]+1;
                 if(native_adreno_view_diag[1]<=16 || !(native_adreno_view_diag[1]&127))
-                    K70BootLog("K70 GPU: VM CPU view token %u bytes %llu spans %llu writecombined 1 verified
-",type,(unsigned long long)bytes,(unsigned long long)backing->spanCount());
+                    K70BootLog("K70 GPU: VM CPU view token %u bytes %llu spans %llu writecombined 1 verified\n",type,(unsigned long long)bytes,(unsigned long long)backing->spanCount());
                 status=kIOReturnSuccess;
             }
         }
