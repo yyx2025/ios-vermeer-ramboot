@@ -62,7 +62,7 @@ def compile(source,output,cpp=True,native_relative=None):
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
-                       'K70UsbConsole.c', 'QcomXnuUsbDebug.c'):
+                       'K70UsbConsole.c', 'QcomXnuUsbDebug.c', 'QcomUsbScreenshot.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
     if source.name == 'K70UsbConsole.c' or 'replacements/qud' in str(source):
         # <kern/thread.h> (directly, or through <IOKit/IOLib.h> for the

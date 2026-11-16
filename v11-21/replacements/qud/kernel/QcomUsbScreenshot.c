@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "QcomUsbScreenshot.h"
 #include "QcomUsbControl.h"
-#include <IOKit/IOLib.h>
+#include <mach/vm_statistics.h>
+#include <vm/vm_kern.h>
 
 /* 16 MiB of static snapshot storage would land in the kernel image, and this
  * kernel's __DATA has no room at all (see the arena note in
@@ -12,9 +13,15 @@ static uint8_t *pixels;
 
 static int pixels_ensure(void)
 {
+    vm_offset_t address = 0;
+
     if (pixels) return 1;
-    pixels = IOMalloc(QUD_SCREENSHOT_MAX_BYTES);
-    return pixels != 0;
+    /* kmem, not IOKit: IOLib.h and <kern/thread.h> disagree about the
+     * thread-port enumerators in a MACH_KERNEL_PRIVATE build. */
+    if (kmem_alloc(kernel_map, &address, QUD_SCREENSHOT_MAX_BYTES, KMA_NONE,
+                   VM_KERN_MEMORY_KEXT) != KERN_SUCCESS) return 0;
+    pixels = (uint8_t *)address;
+    return 1;
 }
 
 static unsigned provider_state;

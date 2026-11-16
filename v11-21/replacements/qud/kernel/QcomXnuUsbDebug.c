@@ -12,7 +12,8 @@
 #include <machine/machine_routines.h>
 #include <kern/cpu_number.h>
 #include <pexpert/pexpert.h>
-#include <IOKit/IOLib.h>
+#include <mach/vm_statistics.h>
+#include <vm/vm_kern.h>
 
 #define NATIVE_CONTEXT_BYTES DWC3_CONTEXT_BYTES
 #define GCC_BYTES QUD_GCC_BYTES
@@ -90,15 +91,32 @@ static void bytes_copy(void *to, const void *from, size_t bytes)
     const volatile uint8_t *s = from;
     while (bytes--) *d++ = *s++;
 }
+/* kmem, not IOKit: <IOKit/IOLib.h> pulls mach_interface.h/ipc_tt.h, whose
+ * thread-port enumerators are already defined by <kern/thread.h> in a
+ * MACH_KERNEL_PRIVATE build, so the two cannot coexist in one unit. */
+static void *arena_contig(vm_size_t size)
+{
+    vm_offset_t address = 0;
+    if (kmem_alloc_contig(kernel_map, &address, size, 0xfffu, 0, 0, KMA_NONE,
+                          VM_KERN_MEMORY_KEXT) != KERN_SUCCESS) return NULL;
+    return (void *)address;
+}
+
+static void *arena_any(vm_size_t size)
+{
+    vm_offset_t address = 0;
+    if (kmem_alloc(kernel_map, &address, size, KMA_NONE,
+                   VM_KERN_MEMORY_KEXT) != KERN_SUCCESS) return NULL;
+    return (void *)address;
+}
+
 static int arena_alloc(void)
 {
-    IOPhysicalAddress physical;
-
     if (usb_dma) return 1;
-    usb_dma = IOMallocContiguous(DWC3_DMA_BYTES, DWC3_DMA_ALIGNMENT, &physical);
-    usb_tables = IOMallocContiguous(QUSB_DOMAIN_PT_BYTES, PAGE_BYTES, &physical);
-    usb_context = IOMalloc(NATIVE_CONTEXT_BYTES);
-    usb_log_bytes = IOMalloc(SOC_USB_LOG_BUFFER_BYTES);
+    usb_dma = arena_contig(DWC3_DMA_BYTES);
+    usb_tables = arena_contig(QUSB_DOMAIN_PT_BYTES);
+    usb_context = arena_any(NATIVE_CONTEXT_BYTES);
+    usb_log_bytes = arena_any(SOC_USB_LOG_BUFFER_BYTES);
     if (!usb_dma || !usb_tables || !usb_context || !usb_log_bytes) return 0;
     /* Same starting state a zero-filled .bss array would have given us. */
     bytes_zero(usb_dma, DWC3_DMA_BYTES);
