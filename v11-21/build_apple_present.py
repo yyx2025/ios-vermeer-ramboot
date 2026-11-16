@@ -288,6 +288,7 @@ assert b'only single-CPU bring-up' not in blob, 'single-CPU panic string survive
 # v11.21: the fast path must be the linked one, not the cached retained object.
 assert b'present fast path' in blob, 'missing present fast path log'
 assert b'row cache %s, stats %s' in blob, 'missing row cache log'
+assert b'K70 FRAME: GPU completed %llu sequence %llu layers %u' in blob
 assert b'VERMEER FB: logical canvas 1125x2436 scaled to full panel' in blob
 # v11.31: the USB console must be a real link, not a declared unit. The module's
 # own banner, our worker's entry point and the exported API all have to be there.
