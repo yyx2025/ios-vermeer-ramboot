@@ -253,9 +253,12 @@ IOReturn NativeAES::performAES(IOMemoryDescriptor *input, IOMemoryDescriptor *ou
 // build time, and invoked only after the original crypto parent has loaded.
 extern kmod_info_t g_kernel_kmod_info;
 extern "C" void k70_aes_static_init(void) __asm__("__GLOBAL__sub_I_NativeAES.cpp");
+/* v11.31: IOAESAccelerator::gMetaClass is an `(absolute)` prelink symbol;
+ * bind the runtime parent before postModLoad inspects superClassLink. */
+extern "C" const OSMetaClass *k70_meta_bind_aes(const OSMetaClass *);
 extern "C" IOReturn k70_aes_start(void)
 {
-  /* v11.30: one line per step. v11.27 died right after the first line of this
+  /* v11.31: one line per step. v11.27 died right after the first line of this
    * function and the panel gave no clue which call it was inside, because the
    * caller's "K70 AES: startup status" line never printed. Every stage below
    * now announces itself, so the next screenshot names the exact call. */
@@ -276,6 +279,8 @@ extern "C" IOReturn k70_aes_start(void)
   if (!handle) return kIOReturnNoResources;
   k70_aes_static_init();
   IOLog("K70 AES: 5 static init done\n");
+  const OSMetaClass *old_parent = k70_meta_bind_aes(parent);
+  IOLog("K70 AES: 5b parent bind %p -> %p\n", (void *)old_parent, (void *)parent);
   status = OSMetaClass::postModLoad(handle);
   IOLog("K70 AES: 6 postModLoad status 0x%x\n", status);
   if (status) return status;

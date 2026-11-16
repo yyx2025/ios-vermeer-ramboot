@@ -5,13 +5,13 @@
 #include <IOKit/IOLib.h>
 #include <kern/thread.h>
 extern "C" IOReturn k70_aes_start(void);
-/* v11.30: this is the only entry point that actually runs during boot. The
+/* v11.31: this is the only entry point that actually runs during boot. The
  * K70StartupService personality carries IOResourceMatch=IOBSD, so it stays
  * unmatched until the root volume is live; by then the one-shot below has
  * long returned kIOReturnBusy. v11.27 put the console start in that service,
  * which is why the panel never showed a single "K70 USB:" line. */
 extern "C" int k70_usb_console_start(void);
-/* v11.30: page accounting line every 15 s. Answers "why does it always run
+/* v11.31: page accounting line every 15 s. Answers "why does it always run
  * out of memory and respring" with numbers instead of a guess. */
 extern "C" int k70_mem_report_start(void);
 
@@ -30,7 +30,7 @@ void gpuThread(void *,wait_result_t)
 {
     thread_set_thread_name(current_thread(),"k70-gpu-start");
     IOLog("K70 v11.12: startup worker entered\n");
-    /* v11.30: GPU first.  v11.29 proved the AES provider trips __stack_chk_fail
+    /* v11.31: GPU first.  v11.29 proved the AES provider trips __stack_chk_fail
      * right after postModLoad, and because AES used to run before k70_gpu_boot
      * the GPU six stages never executed.  Bring the accelerator up and publish
      * it first so the CA/Metal path exists and the panel reports its stage,
@@ -47,7 +47,7 @@ void gpuThread(void *,wait_result_t)
 
 extern "C" IOReturn k70_gpu_start_worker(void)
 {
-    /* v11.30: bring the USB console up before anything that can panic, and do
+    /* v11.31: bring the USB console up before anything that can panic, and do
      * it here rather than in K70StartupService because this is the call
      * SweetFramebuffer::start() actually makes. Idempotent; it only spawns a
      * polling worker and never sleeps the caller. */
