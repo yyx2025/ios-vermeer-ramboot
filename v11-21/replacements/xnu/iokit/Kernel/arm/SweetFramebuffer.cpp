@@ -186,7 +186,7 @@ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
 static uint64_t _Atomic vf_submitted, vf_presented, vf_bytes, vf_missing, vf_rejected, vf_ticks;
 static void vermeer_frame_status(void)
 {
-    IOLog("VERMEER FRAME: submits=%llu presents=%llu ticks=%llu backend=cpu-copy gpu=unavailable\n",
+    IOLog("VERMEER FRAME: submits=%llu cpu-presents=%llu ticks=%llu\n",
         os_atomic_load(&vf_submitted,relaxed),os_atomic_load(&vf_presented,relaxed),os_atomic_load(&vf_ticks,relaxed));
     IOLog("VERMEER FRAME: default=logical1125x2436 panel=1440x3200 full-panel-v8\n");
     IOLog("VERMEER FRAME: copied-bytes=%llu missing=%llu rejected=%llu\n",
