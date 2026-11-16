@@ -75,5 +75,10 @@ jobs:
         if: always()
         with:
           name: k70-v11-21-present-relink
-          path: v11-21-result/
+          path: |
+            v11-21-result/kernel.firmware-slots
+            v11-21-result/*.json
+            v11-21-result/*.txt
+            v11-21-result/*.log
+            v11-21-result/*.S
           retention-days: 7

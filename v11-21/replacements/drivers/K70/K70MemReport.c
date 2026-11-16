@@ -69,10 +69,8 @@ k70_mem_put_u32(char *out, unsigned value)
 static void
 k70_mem_thread(void *arg __unused, wait_result_t result __unused)
 {
-	unsigned int sample = 0;
-
 	for (;;) {
-		char line[96];
+		char line[192];
 		char *p = line;
 		uint64_t deadline;
 		unsigned free_mb = K70_MEM_MB(vm_page_free_count);
@@ -83,15 +81,21 @@ k70_mem_thread(void *arg __unused, wait_result_t result __unused)
 		    free_mb, K70_MEM_MB(vm_page_free_target), wire_mb,
 		    K70_MEM_MB(vm_page_active_count), inactive_mb,
 		    K70_MEM_MB(vm_page_speculative_count));
-		/* Mirror every fourth sample: the panel is the record, the serial line
-		 * is for whoever is watching live. */
-		if ((sample++ & 3) == 0) {
-			p = k70_mem_put(p, "K70 MEM free=");
+		/* Keep the same 15-second cadence on CDC so a short respring loop has
+		 * a usable memory record, including reclaimable active pages. */
+		{
+			p = k70_mem_put(p, "K70 MEM: free=");
 			p = k70_mem_put_u32(p, free_mb);
+			p = k70_mem_put(p, "MB target=");
+			p = k70_mem_put_u32(p, K70_MEM_MB(vm_page_free_target));
 			p = k70_mem_put(p, "MB wire=");
 			p = k70_mem_put_u32(p, wire_mb);
+			p = k70_mem_put(p, "MB active=");
+			p = k70_mem_put_u32(p, K70_MEM_MB(vm_page_active_count));
 			p = k70_mem_put(p, "MB inactive=");
 			p = k70_mem_put_u32(p, inactive_mb);
+			p = k70_mem_put(p, "MB spec=");
+			p = k70_mem_put_u32(p, K70_MEM_MB(vm_page_speculative_count));
 			p = k70_mem_put(p, "MB");
 			*p = 0;
 			k70_usb_console_line(line);
