@@ -45,6 +45,11 @@ def compile(source,output,cpp=True,native_relative=None):
     source_root=W/'replacements/xnu'
     inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',source_root/'pexpert',
          *[X/'xnu'/p for p in ('libkern','iokit','osfmk','bsd','pexpert')],W/'SoftwareAES']
+    # v11.27: QcomXnuUsbDebug (polled DWC3 CDC-ACM console). The module is
+    # freestanding except for three XNU services: ml_io_map, PE_parse_boot_argn
+    # and the processor/thread primitives used by the consumer worker.
+    qud=W/'replacements/qud'
+    inc += [qud/'include',qud/'soc',qud/'usb',qud/'kernel']
     inc += [O.parent.parent.parent/'source'/p for p in ()]
     # Only the required retained driver headers are fetched from the pinned
     # source commit; the source archive is prepared separately by the workflow.
@@ -56,8 +61,16 @@ def compile(source,output,cpp=True,native_relative=None):
     # With that define <osfmk/string.h> asks for a bare <types.h>, so a shim
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
-    if source.name in ('cpu.c', 'machine_routines.c', 'start.s'):
+    if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
+                       'K70UsbConsole.c', 'QcomXnuUsbDebug.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
+    if 'replacements/qud' in str(source) or source.name == 'K70UsbConsole.c':
+        # The SoC profile is selected by macro, exactly as the module's own
+        # build.py does with --soc; Sm8550.h holds the kalama GCC/DWC3/QSMMU
+        # addresses, which the vermeer device tree confirms verbatim
+        # (ssusb@a600000 reg 0xa600000/0x100000, apps-smmu@15000000,
+        #  dwc3 iommus stream 0x40, iommu-dma-addr-pool 0x90000000).
+        extra += ['-DQUD_SOC_HEADER="Sm8550.h"']
     args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
     cwd=B/directory/'DEVELOPMENT'
@@ -103,7 +116,7 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
- # v11.26 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ # v11.27 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
  'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
  # osfmk/arm64/sleh.c is deliberately NOT rebuilt.  See the note below.
 }
@@ -121,6 +134,19 @@ for relative,(output,cpp) in units.items():
     compile(W/'replacements/xnu'/relative,target,cpp,relative)
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
+# v11.27 USB CDC-ACM console. Ownership split is the module's: the freestanding
+# DWC3 core knows nothing about Qualcomm or XNU, the SoC layer owns GCC/DWC3/QSMMU
+# qualification plus the SMMUv2 private S1 lease, and the kernel layer is the only
+# place that touches ml_io_map or the boot args. K70UsbConsole.c is the consumer
+# worker (boot-CPU bound, 5 ms poll) and the panel fallback line.
+qud_objects=[]
+for name in ('usb/Dwc3.c','soc/QcomUsbQualify.c','soc/QcomUsbDmaDomain.c',
+             'kernel/QcomXnuUsbDebug.c','kernel/QcomUsbScreenshot.c'):
+    target=OUT/('qud-'+Path(name).stem+'.o')
+    compile(W/'replacements/qud'/name,target,False)
+    qud_objects.append(target)
+compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False)
+qud_objects.append(OUT/'K70UsbConsole.o')
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
 
 llvm=Path(subprocess.check_output(['brew','--prefix','llvm'],text=True).strip())/'bin'
@@ -213,6 +239,7 @@ for attempt in range(4):
     # it was never linked into the successful retained GPU kernel. Do not
     # introduce that unfinished backend into a Wi-Fi-disabled RAM profile.
     args+=['-Wl,-force_load,'+str(gpu),str(fw.with_suffix('.o')),str(asm.with_suffix('.o')),str(OUT/'NativeAES.late.o')]
+    args+=[str(p) for p in qud_objects]
     result=subprocess.run(['xcrun','clang++',*args],cwd=B,capture_output=True,text=True)
     (OUT/('link-pass'+str(attempt)+'.log')).write_text(result.stdout+result.stderr)
     print('Link pass',attempt,result.returncode,flush=True)
@@ -245,6 +272,14 @@ assert b'only single-CPU bring-up' not in blob, 'single-CPU panic string survive
 assert b'present fast path' in blob, 'missing present fast path log'
 assert b'row cache %s, stats %s' in blob, 'missing row cache log'
 assert b'VERMEER FB: logical canvas 1125x2436 scaled to full panel' in blob
+# v11.27: the USB console must be a real link, not a declared unit. The module's
+# own banner, our worker's entry point and the exported API all have to be there.
+assert '_k70_usb_console_start' in names, 'missing USB console entry point'
+assert '_qcom_usb_debug_init' in names and '_qcom_usb_debug_poll' in names, 'missing QUD backend'
+assert '_dwc3_init' in names and '_QcomUsbDomainInstall' in names, 'missing DWC3/SMMU units'
+for text in (b'QCOM XNU USB CDC ACM v1', b'K70 USB: controller takeover starting',
+             b'K70 USB console attached'):
+    assert text in blob, 'missing USB console string ' + text.decode()
 report=dict(schema='k70-v11-21-present-apple-source-relink/1',compiler=subprocess.check_output(['xcrun','clang','--version'],text=True).splitlines()[0],
     kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,checks=checks,passes=passes,prelink_slide=slide,
     firmware=C['firmware'],cached_kernel_run=43076755379,retained_driver_run=43091498480,
