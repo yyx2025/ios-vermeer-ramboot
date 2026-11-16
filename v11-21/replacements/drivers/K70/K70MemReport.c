@@ -3,14 +3,9 @@
  * One line every 15 s with the kernel's own page accounting, emitted to the
  * panel console and mirrored on the USB CDC-ACM port.
  *
- * Why: a RAM-booted iOS keeps a 5.8 GiB root image resident, and everything
- * else has to fit in what is left.  When the free pool collapses the system
- * answers with jetsam, which the user sees as "the spinner comes back and the
- * phone drops to the lock screen".  Without numbers that is indistinguishable
- * from a GUI crash, so this reporter makes the two cases tell apart:
- *
- *   free falling, wire/inactive growing  -> memory pressure, jetsam incoming
- *   free flat and healthy                -> the spinner was a crash, not memory
+ * XNU owns a 2 GiB VM window; the RAM root uses a separate external
+ * reserved range. These samples establish memory pressure, while panic and
+ * process-exit records are required to identify the actual failure.
  *
  * The counters are the plain globals the VM already exports; reading them
  * without the page-queue lock can, at worst, mix two adjacent samples, which

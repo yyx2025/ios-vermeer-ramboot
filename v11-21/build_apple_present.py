@@ -145,6 +145,9 @@ for relative,(output,cpp) in units.items():
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService',
              'K70MetaBind','K70FrameHandoff'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
+# Rebuild the exact retained iOS16 publishing unit with balanced CPU-map
+# teardown. Cached objects are verified above before this replacement.
+compile(W/'replacements/drivers/Adreno740/NativeAdrenoPublish.cpp',O/'NativeAdrenoPublish.o')
 # v11.31 USB CDC-ACM console. Ownership split is the module's: the freestanding
 # DWC3 core knows nothing about Qualcomm or XNU, the SoC layer owns GCC/DWC3/QSMMU
 # qualification plus the SMMUv2 private S1 lease, and the kernel layer is the only
@@ -289,6 +292,9 @@ assert b'only single-CPU bring-up' not in blob, 'single-CPU panic string survive
 assert b'present fast path' in blob, 'missing present fast path log'
 assert b'row cache %s, stats %s' in blob, 'missing row cache log'
 assert b'K70 FRAME: GPU completed %llu sequence %llu layers %u' in blob
+assert b'K70 GPU: CPU view teardown token %u mappings %u status 0x0 total %u' in blob
+assert b'K70 AES: selftest kat=%u interface=%u completed=%u' in blob
+assert b'K70 AES: 8 init failed' in blob
 assert b'VERMEER FB: logical canvas 1125x2436 scaled to full panel' in blob
 # v11.31: the USB console must be a real link, not a declared unit. The module's
 # own banner, our worker's entry point and the exported API all have to be there.

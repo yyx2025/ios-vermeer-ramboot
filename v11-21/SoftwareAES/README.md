@@ -11,3 +11,7 @@ with its own key schedule, by the kernel's `aes_encrypt_cbc` and
 bytes and the time spent in them.
 
 Build and interface details: [documentation](https://unixnu.com/drivers/software-aes). Component sources and dependencies: [catalog](https://unixnu.com/reference/components).
+
+K70 iOS16 startup diagnostics mirror each load/init/start step and the
+existing NIST CBC/descriptor self-test result to the enqueue-only USB log.
+The provider still registers only after all existing tests succeed.

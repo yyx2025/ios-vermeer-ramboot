@@ -14,6 +14,7 @@
 #include <IOKit/IOPlatformExpert.h>
 #include <libkern/OSKextLib.h>
 #include <mach/kmod.h>
+#include "K70BootLog.h"
 
 extern "C" {
 volatile uint32_t native_aes_kat_status = 0;
@@ -175,13 +176,21 @@ static bool knownAnswerTest(NativeAES *provider)
 bool NativeAES::start(IOService *provider)
 {
   if (!g_crypto_funcs || !g_crypto_funcs->ccaes_cbc_encrypt || !g_crypto_funcs->ccaes_cbc_decrypt ||
-      !IOService::start(provider)) return false;
+      !IOService::start(provider)) {
+    K70BootLog("K70 AES: start prerequisite failed crypto=%p encrypt=%p decrypt=%p\n",
+      g_crypto_funcs, g_crypto_funcs ? g_crypto_funcs->ccaes_cbc_encrypt : nullptr,
+      g_crypto_funcs ? g_crypto_funcs->ccaes_cbc_decrypt : nullptr);
+    return false;
+  }
   native_aes_kat_status = knownAnswerTest(this) ? 1 : 2;
+  K70BootLog("K70 AES: selftest kat=%u interface=%u completed=%u\n",
+    (unsigned)native_aes_kat_status, (unsigned)native_aes_interface_status,
+    (unsigned)native_aes_completed);
   if (native_aes_kat_status != 1) return false;
   setProperty("NativeAESSoftwareKeysOnly", true);
   setProperty("NativeAESNonceKeyIsSoftwareDerived", true);
   native_aes_registered = 1;
-  IOLog("K70 AES: NIST CBC and descriptor tests PASS; software keys provider registered\n");
+  K70BootLog("K70 AES: NIST CBC and descriptor tests PASS; software keys provider registered\n");
   registerService();
   return true;
 }
@@ -262,41 +271,46 @@ extern "C" IOReturn k70_aes_start(void)
    * function and the panel gave no clue which call it was inside, because the
    * caller's "K70 AES: startup status" line never printed. Every stage below
    * now announces itself, so the next screenshot names the exact call. */
-  IOLog("K70 AES: loading original iOS16 crypto family\n");
+  K70BootLog("K70 AES: loading original iOS16 crypto family\n");
   IOReturn status = OSKextLoadKextWithIdentifier("com.apple.iokit.IOCryptoAcceleratorFamily");
-  IOLog("K70 AES: 1 kext load status 0x%x\n", status);
+  K70BootLog("K70 AES: 1 kext load status 0x%x\n", status);
   if (status) return status;
   const OSSymbol *name = OSSymbol::withCString("IOAESAccelerator");
-  IOLog("K70 AES: 2 symbol %p\n", name);
+  K70BootLog("K70 AES: 2 symbol %p\n", name);
   const OSMetaClass *parent = name ? OSMetaClass::getMetaClassWithName(name) : nullptr;
   if (name) name->release();
-  IOLog("K70 AES: 3 parent %p classsize 0x%x sizeof 0x%x\n", (void *)parent,
+  K70BootLog("K70 AES: 3 parent %p classsize 0x%x sizeof 0x%x\n", (void *)parent,
         (unsigned)(parent ? parent->getClassSize() : 0u), (unsigned)sizeof(NativeAES));
   if (!parent || parent->getClassSize() != 0x120 || sizeof(NativeAES) != 0x120)
     return kIOReturnUnsupported;
   void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
-  IOLog("K70 AES: 4 preModLoad %p\n", handle);
+  K70BootLog("K70 AES: 4 preModLoad %p\n", handle);
   if (!handle) return kIOReturnNoResources;
   k70_aes_static_init();
-  IOLog("K70 AES: 5 static init done\n");
+  K70BootLog("K70 AES: 5 static init done\n");
   const void *old_parent = k70_meta_bind_aes(parent);
-  IOLog("K70 AES: 5b parent bind %p -> %p\n", (void *)old_parent, (void *)parent);
+  K70BootLog("K70 AES: 5b parent bind %p -> %p\n", (void *)old_parent, (void *)parent);
   status = OSMetaClass::postModLoad(handle);
-  IOLog("K70 AES: 6 postModLoad status 0x%x\n", status);
+  K70BootLog("K70 AES: 6 postModLoad status 0x%x\n", status);
   if (status) return status;
   auto *service = new NativeAES;
-  IOLog("K70 AES: 7 new %p\n", service);
+  K70BootLog("K70 AES: 7 new %p\n", service);
   if (!service) return kIOReturnNoMemory;
-  if (!service->init()) { service->release(); return kIOReturnError; }
-  IOLog("K70 AES: 8 init ok\n");
+  if (!service->init()) {
+    K70BootLog("K70 AES: 8 init failed\n");
+    service->release(); return kIOReturnError;
+  }
+  K70BootLog("K70 AES: 8 init ok\n");
   IOService *platform = IOService::getPlatform();
-  IOLog("K70 AES: 9 platform %p\n", platform);
+  K70BootLog("K70 AES: 9 platform %p\n", platform);
   if (!service->attach(platform)) { service->release(); return kIOReturnNotAttached; }
-  IOLog("K70 AES: 10 attached\n");
+  K70BootLog("K70 AES: 10 attached\n");
   if (!service->start(platform)) {
+    K70BootLog("K70 AES: 11 start failed kat=%u interface=%u\n",
+      (unsigned)native_aes_kat_status, (unsigned)native_aes_interface_status);
     service->detach(platform); service->release(); return kIOReturnError;
   }
-  IOLog("K70 AES: 11 started registered=%u kat=%u interface=%u\n",
+  K70BootLog("K70 AES: 11 started registered=%u kat=%u interface=%u\n",
         (unsigned)native_aes_registered, (unsigned)native_aes_kat_status,
         (unsigned)native_aes_interface_status);
   // The registered service retains its original reference for the RAM boot.
