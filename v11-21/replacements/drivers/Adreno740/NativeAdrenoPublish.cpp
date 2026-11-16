@@ -641,6 +641,31 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
             return kIOReturnUnsupported;
         }
         if(value>=0x7000 && value<0x8000) {
+            /* New plugin phase lines use 0x7ffe and a newline terminator.
+             * Key incomplete lines by task AND thread: discovery and scanout
+             * workers can report simultaneously, as can separate processes.
+             * Keys are opaque comparisons; no task/thread pointer is read. */
+            struct PhaseLine {task_t task;thread_t thread;unsigned length;char text[64];};
+            static PhaseLine phases[16];
+            char completed[64]={};bool handled=false;const thread_t thread=current_thread();
+            IOLockLock(g.lock);
+            PhaseLine *phase=nullptr;
+            for(auto &p:phases)if(p.task==owningTask && p.thread==thread){phase=&p;break;}
+            if(value==0x7ffe) {
+                if(!phase)for(auto &p:phases)if(!p.task){phase=&p;break;}
+                if(phase){*phase={};phase->task=owningTask;phase->thread=thread;}
+                handled=true;
+            } else if(phase && value<0x7100) {
+                handled=true;
+                if(value==0x700a) {
+                    memcpy(completed,phase->text,sizeof completed);
+                    memcpy(native_adreno_metal_diag.report,phase->text,sizeof phase->text);
+                    *phase={};
+                } else if(phase->length<sizeof phase->text-1)phase->text[phase->length++]=char(value&0xff);
+            }
+            IOLockUnlock(g.lock);
+            if(completed[0])K70BootLog("K70 METAL: %s\n",completed);
+            if(handled)return kIOReturnUnsupported;
             /* 0x7ffe starts a line in report (GPU7) instead: the Metal bridge's result, after the raw test's line has been read. */
             static uint32_t length;
             static char *line=native_adreno_metal_diag.report2;

@@ -58,6 +58,7 @@ extern "C" int vermeer_console_muted;
 #include "vermeer_frame_policy.h"
 #include "vermeer_frame_scale.h"
 #include "K70FrameHandoff.h"
+#include "K70PanelObserve.h"
 extern "C" void vermeer_debug_frame_register(void (*)(void));
 #if defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI
 extern "C" IOReturn k70_gpu_start_worker(void);
@@ -134,6 +135,7 @@ public:
 	uint32_t      fStatFrames, fStatRows, fStatSkipped;
 	uint64_t      fStatNanos;
 	IOLock       *fLock;            /* swaps and client list */
+	K70PanelObserve fPanelObserve;
 	OSArray      *fClients;
 	uint32_t      fSwapID;
 	bool          fConsolePaused;
@@ -480,6 +482,7 @@ AppleCLCD::invalidateRows()
 void
 AppleCLCD::free()
 {
+	fPanelObserve.release();
 	if (fHandoff != NULL) {
 		IOFreeData(fHandoff, SWEET_FB_SWAP_REC_SIZE);
 		fHandoff = NULL;
@@ -499,6 +502,7 @@ void
 AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 {
 	AppleCLCD *fb = (AppleCLCD *)owner;
+	fb->fPanelObserve.sample(fb->fPhys,fb->fWidth,fb->fHeight,fb->fRowBytes);
 	uint64_t now = mach_absolute_time();
 	uint64_t count = ++fb->fVsyncCount;
 	os_atomic_inc(&vf_ticks,relaxed);
