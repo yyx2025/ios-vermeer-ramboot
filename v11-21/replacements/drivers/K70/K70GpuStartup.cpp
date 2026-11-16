@@ -280,12 +280,20 @@ public:
         NativeAdrenoFirmwareView validated{};
         IOReturn status=NativeAdrenoFirmware::validate(native_adreno_firmware_image,
             native_adreno_firmware_image_size,&rules,&validated);
+        IOLog("K70 GPU: firmware GMU status 0x%x bytes %llu\n",status,
+            (unsigned long long)native_adreno_firmware_image_size);
         if(status)return stop(status);
         if(execution) {
-            if((status=NativeAdrenoFirmware::validate(native_adreno_sqe_firmware_image,
-                native_adreno_sqe_firmware_image_size,&k70_sqe_rules,&sqe_)) ||
-               (status=NativeAdrenoFirmware::validate(native_adreno_zap_image,
-                native_adreno_zap_image_size,&k70_zap_rules,&zap_)))return stop(status);
+            status=NativeAdrenoFirmware::validate(native_adreno_sqe_firmware_image,
+                native_adreno_sqe_firmware_image_size,&k70_sqe_rules,&sqe_);
+            IOLog("K70 GPU: firmware SQE status 0x%x bytes %llu\n",status,
+                (unsigned long long)native_adreno_sqe_firmware_image_size);
+            if(status)return stop(status);
+            status=NativeAdrenoFirmware::validate(native_adreno_zap_image,
+                native_adreno_zap_image_size,&k70_zap_rules,&zap_);
+            IOLog("K70 GPU: firmware Xiaomi ZAP status 0x%x bytes %llu\n",status,
+                (unsigned long long)native_adreno_zap_image_size);
+            if(status)return stop(status);
             if(!k70_zap_plan(zap_.bytes,zap_.length,&zap_plan_))return stop(kIOReturnInvalid);
         }
         NativeAdrenoCpuState cpu{};
@@ -339,10 +347,20 @@ public:
         if((status=platform_.services(&time_,&device_.services)))return stop(status);
         report_.stage=K70GpuIdle;
         uint32_t reset=0,hfi=0,retention=0,busy=0;
-        if(readCore(REG_GMU_CM3_SYSRESET,&reset) || readCore(REG_GMU_HFI_CTRL_STATUS,&hfi) ||
-            device_.io.read32(device_.io.cookie,ShengGmuCxMisc,REG_CX_MISC_TCM_RET_CNTL*4,&retention) ||
-            device_.io.read32(device_.io.cookie,ShengGmuRscc,REG_RSCC_SEQ_BUSY_DRV0*4,&busy))
-            return stop(kIOReturnIOError);
+        if(readCore(REG_GMU_CM3_SYSRESET,&reset)) {
+            IOLog("K70 GPU: idle read failed GMU SYSRESET\n"); return stop(kIOReturnIOError);
+        }
+        if(readCore(REG_GMU_HFI_CTRL_STATUS,&hfi)) {
+            IOLog("K70 GPU: idle read failed GMU HFI_CTRL_STATUS\n"); return stop(kIOReturnIOError);
+        }
+        if(device_.io.read32(device_.io.cookie,ShengGmuCxMisc,REG_CX_MISC_TCM_RET_CNTL*4,&retention)) {
+            IOLog("K70 GPU: idle read failed CX_MISC TCM_RET_CNTL\n"); return stop(kIOReturnIOError);
+        }
+        if(device_.io.read32(device_.io.cookie,ShengGmuRscc,REG_RSCC_SEQ_BUSY_DRV0*4,&busy)) {
+            IOLog("K70 GPU: idle read failed RSCC SEQ_BUSY\n"); return stop(kIOReturnIOError);
+        }
+        IOLog("K70 GPU: idle reset=0x%x hfi=0x%x retention=0x%x rscc_busy=0x%x\n",
+            reset,hfi,retention,busy);
         if(reset!=1 || hfi || retention || busy)return stop(kIOReturnBusy);
         if(!map(SHENG_GPU_SMMU_BASE,SHENG_GPU_SMMU_BYTES,smmu_map_))return stop(kIOReturnNoMemory);
         smmu_mmio_={reinterpret_cast<volatile unsigned char *>(smmu_map_->getVirtualAddress()),SHENG_GPU_SMMU_BYTES};

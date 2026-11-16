@@ -18,7 +18,7 @@
     "zap": {
       "file": "a740_zap.mbn",
       "bytes": 12088,
-      "sha256": "2015e9bb81b1f6efed11fdab0a5884b3f308ca41d50f4315e3ed2e36ee5e57f1",
+      "sha256": "ff93b587922d5d121501f765c1330edfb2de812450b1a35818a657f3c4cb3399",
       "symbol": "native_adreno_zap_image"
     }
   },
