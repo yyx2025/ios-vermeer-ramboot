@@ -137,6 +137,10 @@ k70_usb_thread(void *arg __unused, wait_result_t result __unused)
 		goto done;
 	}
 
+	/* v11.29: this line is the binary marker that the MMIO windows are
+	 * mapped before the owner guard (v11.28 panicked in zalloc with DAIF
+	 * masked by the guard).  If you see it, the fix is in this kernel. */
+	printf("K70 USB: MMIO mapped before owner guard\n");
 	printf("K70 USB: controller takeover starting (DWC3 polled CDC-ACM)\n");
 	/* The inherited state is whatever ABL left behind, and the first seconds
 	 * after the jump are not necessarily the settled state: the PHY PLL can

@@ -11,11 +11,23 @@
  * control channel it is never allocated at all. */
 static uint8_t *pixels;
 
+static int interrupts_enabled(void)
+{
+    uint64_t daif;
+    __asm__ volatile("mrs %0, daif" : "=r"(daif));
+    /* DAIF: D=bit9, A=bit8, I=bit7, F=bit6; acquire() sets I and F. */
+    return (daif & UINT64_C(0x3c0)) == 0;
+}
+
 static int pixels_ensure(void)
 {
     vm_offset_t address = 0;
 
     if (pixels) return 1;
+    /* zalloc_ext() asserts when {k,z}alloc is reached with interrupts masked;
+     * the framed control channel runs under the USB owner guard.  Refuse the
+     * screenshot rather than panic the kernel (v11.28 class of failure). */
+    if (!interrupts_enabled()) return 0;
     /* kmem, not IOKit: IOLib.h and <kern/thread.h> disagree about the
      * thread-port enumerators in a MACH_KERNEL_PRIVATE build. */
     if (kmem_alloc(kernel_map, &address, QUD_SCREENSHOT_MAX_BYTES, KMA_NONE,

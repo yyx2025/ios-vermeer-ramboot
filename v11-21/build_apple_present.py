@@ -45,7 +45,7 @@ def compile(source,output,cpp=True,native_relative=None):
     source_root=W/'replacements/xnu'
     inc=[source_root/'libkern',source_root/'iokit',source_root/'osfmk',source_root/'pexpert',
          *[X/'xnu'/p for p in ('libkern','iokit','osfmk','bsd','pexpert')],W/'SoftwareAES']
-    # v11.28: QcomXnuUsbDebug (polled DWC3 CDC-ACM console). The module is
+    # v11.29: QcomXnuUsbDebug (polled DWC3 CDC-ACM console). The module is
     # freestanding except for three XNU services: ml_io_map, PE_parse_boot_argn
     # and the processor/thread primitives used by the consumer worker.
     qud=W/'replacements/qud'
@@ -126,7 +126,7 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
- # v11.28 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ # v11.29 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
  'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
  # osfmk/arm64/sleh.c is deliberately NOT rebuilt.  See the note below.
 }
@@ -144,7 +144,7 @@ for relative,(output,cpp) in units.items():
     compile(W/'replacements/xnu'/relative,target,cpp,relative)
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
-# v11.28 USB CDC-ACM console. Ownership split is the module's: the freestanding
+# v11.29 USB CDC-ACM console. Ownership split is the module's: the freestanding
 # DWC3 core knows nothing about Qualcomm or XNU, the SoC layer owns GCC/DWC3/QSMMU
 # qualification plus the SMMUv2 private S1 lease, and the kernel layer is the only
 # place that touches ml_io_map or the boot args. K70UsbConsole.c is the consumer
@@ -157,7 +157,7 @@ for name in ('usb/Dwc3.c','soc/QcomUsbQualify.c','soc/QcomUsbDmaDomain.c',
     qud_objects.append(target)
 compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False)
 qud_objects.append(OUT/'K70UsbConsole.o')
-# v11.28: page accounting to the panel and the serial port.
+# v11.29: page accounting to the panel and the serial port.
 compile(W/'replacements/drivers/K70/K70MemReport.c',OUT/'K70MemReport.o',False)
 qud_objects.append(OUT/'K70MemReport.o')
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
@@ -285,7 +285,7 @@ assert b'only single-CPU bring-up' not in blob, 'single-CPU panic string survive
 assert b'present fast path' in blob, 'missing present fast path log'
 assert b'row cache %s, stats %s' in blob, 'missing row cache log'
 assert b'VERMEER FB: logical canvas 1125x2436 scaled to full panel' in blob
-# v11.28: the USB console must be a real link, not a declared unit. The module's
+# v11.29: the USB console must be a real link, not a declared unit. The module's
 # own banner, our worker's entry point and the exported API all have to be there.
 assert '_k70_usb_console_start' in names, 'missing USB console entry point'
 assert '_qcom_usb_debug_init' in names and '_qcom_usb_debug_poll' in names, 'missing QUD backend'
@@ -293,14 +293,15 @@ assert '_dwc3_init' in names and '_QcomUsbDomainInstall' in names, 'missing DWC3
 for text in (b'QCOM XNU USB CDC ACM v1', b'K70 USB: controller takeover starting',
              b'K70 USB console attached'):
     assert text in blob, 'missing USB console string ' + text.decode()
-# v11.28: the console has to be started from the entry SweetFramebuffer::start()
+# v11.29: the console has to be started from the entry SweetFramebuffer::start()
 # actually calls, and the AES bring-up has to be traceable step by step.
 for text in (b'K70 USB: console start returned %d',
+             b'K70 USB: MMIO mapped before owner guard',
              b'K70 USB: attempt %u %s phase=%u error=%u qcom=%u domain=%u',
              b'K70 AES: 1 kext load status 0x%x',
              b'K70 AES: 11 started registered=%u kat=%u interface=%u',
              b'K70 MEM: free=%uMB target=%uMB wire=%uMB active=%uMB inactive=%uMB spec=%uMB'):
-    assert text in blob, 'missing v11.28 string ' + text.decode()
+    assert text in blob, 'missing v11.29 string ' + text.decode()
 assert '_k70_mem_report_start' in names, 'missing memory reporter entry point'
 report=dict(schema='k70-v11-21-present-apple-source-relink/1',compiler=subprocess.check_output(['xcrun','clang','--version'],text=True).splitlines()[0],
     kernel_sha256=sha(final),kernel_bytes=final.stat().st_size,checks=checks,passes=passes,prelink_slide=slide,

@@ -239,7 +239,7 @@ pe_init_fiq()
 	// Find the redistributor for this processor
 #if defined(SWEET)
 	/*
-	 * v11.28: pick the frame from the DTB stride instead of walking TYPERs.
+	 * v11.29: pick the frame from the DTB stride instead of walking TYPERs.
 	 *
 	 * History that forced this shape:
 	 *  - v11.23 computed frame = cpu * GICR_PE_SIZE (0x20000).  Wrong stride,

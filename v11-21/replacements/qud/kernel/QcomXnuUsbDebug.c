@@ -110,13 +110,17 @@ static void *arena_any(vm_size_t size)
     return (void *)address;
 }
 
+static int arenas_ready;
+
 static int arena_alloc(void)
 {
-    if (usb_dma) return 1;
-    usb_dma = arena_contig(DWC3_DMA_BYTES);
-    usb_tables = arena_contig(QUSB_DOMAIN_PT_BYTES);
-    usb_context = arena_any(NATIVE_CONTEXT_BYTES);
-    usb_log_bytes = arena_any(SOC_USB_LOG_BUFFER_BYTES);
+    if (arenas_ready) return 1;
+    /* Retry-safe: a failed partial allocation must not be mistaken for a
+     * complete one just because the first arena happened to succeed. */
+    if (!usb_dma) usb_dma = arena_contig(DWC3_DMA_BYTES);
+    if (!usb_tables) usb_tables = arena_contig(QUSB_DOMAIN_PT_BYTES);
+    if (!usb_context) usb_context = arena_any(NATIVE_CONTEXT_BYTES);
+    if (!usb_log_bytes) usb_log_bytes = arena_any(SOC_USB_LOG_BUFFER_BYTES);
     if (!usb_dma || !usb_tables || !usb_context || !usb_log_bytes) return 0;
     /* Same starting state a zero-filled .bss array would have given us. */
     bytes_zero(usb_dma, DWC3_DMA_BYTES);
@@ -125,7 +129,38 @@ static int arena_alloc(void)
     bytes_zero(usb_log_bytes, SOC_USB_LOG_BUFFER_BYTES);
     usb_log_buffer.data = usb_log_bytes;
     usb_log_buffer.capacity = SOC_USB_LOG_BUFFER_BYTES;
+    arenas_ready = 1;
     return 1;
+}
+
+/* v11.29, real-device panic fix.
+ *
+ * v11.28 printed "K70 USB: controller takeover starting" and then died in
+ *   zalloc.c:6675 Assertion failed: startup_phase < STARTUP_SUB_EARLY_BOOT ||
+ *   ml_get_interrupts_enabled() || ml_is_quiescing() || debug_mode_active()
+ *   Calling {k,z}alloc from interrupt disabled context isn't allowed
+ *
+ * acquire() masks DAIF with `msr daifset, #3`, while ml_io_map() allocates
+ * pmap/io_submap objects through {k,z}alloc.  Those three maps lived inside
+ * the guard, so the very first init always panicked before any status line.
+ *
+ * Map them once here, with interrupts enabled, before acquire().  The maps
+ * are permanent: ml_io_unmap cannot release an io_submap mapping, so a retry
+ * must reuse the existing virtual addresses instead of mapping again. */
+static int map_windows(void)
+{
+    if (!native.gcc_va)
+        native.gcc_va = ml_io_map((vm_offset_t)QUSB_GCC_BASE, GCC_BYTES);
+    if (!native.usb_va)
+        native.usb_va = ml_io_map((vm_offset_t)QUSB_DWC3_BASE, USB_BYTES);
+    if (!native.smmu_va)
+        native.smmu_va = ml_io_map((vm_offset_t)QUSB_SMMU_BASE, QUSB_SMMU_BYTES);
+    return native.gcc_va && native.usb_va && native.smmu_va;
+}
+
+static int prepare(void)
+{
+    return arena_alloc() && map_windows();
 }
 
 static uint64_t counter(void)
@@ -803,9 +838,11 @@ int qcom_usb_debug_init(void)
             if (diagnostic == 2) diag_reset(0);
         }
     }
-    /* Allocate before taking the owner guard: the guard masks IRQ/FIQ and the
-     * allocator may sleep.  Nothing below can run without these arenas. */
-    if (!arena_alloc()) return 0;
+    /* Allocate the arenas AND map the three MMIO windows before the guard:
+     * it masks DAIF, and both kmem_alloc and ml_io_map reach {k,z}alloc.
+     * v11.28 mapped inside the guard and panicked on the first real boot.
+     * Nothing below can run without these resources. */
+    if (!prepare()) return 0;
     if (!acquire(&flags)) {
         if (usb_diag_enabled && native.status.phase == QCOM_USB_DEBUG_NOT_INITIALIZED) {
             fail(QCOM_USB_DEBUG_ACQUIRE_REFUSED, 0);
@@ -860,12 +897,9 @@ int qcom_usb_debug_init(void)
         fail(QCOM_USB_DEBUG_TABLES_NOT_CONTIGUOUS, 0); goto out;
     }
     native.status.dma_iova = QUSB_DOMAIN_IOVA;
+    /* Mapped in prepare(), before the guard was taken.  Only validate here:
+     * re-mapping inside the DAIF-masked window is what killed v11.28. */
     diag_checkpoint(QCOM_USB_DEBUG_DIAG_MAP_GCC);
-    native.gcc_va = ml_io_map((vm_offset_t)QUSB_GCC_BASE, GCC_BYTES);
-    diag_checkpoint(QCOM_USB_DEBUG_DIAG_MAP_USB);
-    native.usb_va = ml_io_map((vm_offset_t)QUSB_DWC3_BASE, USB_BYTES);
-    diag_checkpoint(QCOM_USB_DEBUG_DIAG_MAP_SMMU);
-    native.smmu_va = ml_io_map((vm_offset_t)QUSB_SMMU_BASE, QUSB_SMMU_BYTES);
     if (!native.gcc_va || !native.usb_va || !native.smmu_va) {
         fail(QCOM_USB_DEBUG_MAP_FAILED, 0); goto out;
     }
