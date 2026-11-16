@@ -161,7 +161,7 @@ class AGXDeviceUserClient : public IOUserClient {
      * the descriptor again and unmaps only a mapping that belongs to THAT descriptor (kIOMapReference); a fresh descriptor per call made the
      * unmap a silent no-op, the user PTEs outlived BoCpuUnmap, and BoFree handed pages with a live user mapping to the VM:
      * pmap_assert_free panicked the freeing core and the panic screen parked it (the "BoFree hang", dead touch). */
-    struct View {uint32_t token;IOMemoryDescriptor *descriptor;};
+    struct View {uint32_t token;IOMemoryDescriptor *descriptor;bool prepared;};
     /* One view per live BO token. The cache must hold every BO the client can have (NativeAdrenoClientMaxObjects): a BO whose view is not
      * cached makes IOConnectUnmapMemory64 (which asks clientMemoryForType again) a no-op, the user mapping outlives BoFree and the freed pages panic
      * pmap_assert_free. A cache of 64 held until the render server's hundreds of mapped BOs (int-087). */
@@ -282,9 +282,9 @@ IOReturn AGXDeviceUserClient::dropViews(uint32_t token)
 {
     if(viewCleanupError_)return viewCleanupError_;
     for(;;) {
-        IOMemoryDescriptor *view=nullptr;
+        IOMemoryDescriptor *view=nullptr;bool prepared=false;
         IOLockLock(g.lock);
-        if(views_)for(size_t i=0;i<MaxViews;++i) {View &v=views_[i];if(v.descriptor && (!token || v.token==token)) {view=v.descriptor;v.descriptor=nullptr;v.token=0;break;}}
+        if(views_)for(size_t i=0;i<MaxViews;++i) {View &v=views_[i];if(v.descriptor && (!token || v.token==token)) {view=v.descriptor;prepared=v.prepared;v={};break;}}
         IOLockUnlock(g.lock);
         if(!view)return kIOReturnSuccess;
         /* XNU returns a retained raw IOMemoryMap pointer here. The old loop
@@ -305,6 +305,10 @@ IOReturn AGXDeviceUserClient::dropViews(uint32_t token)
             map->release();
             ++removed;
             native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;
+        }
+        if(prepared) {
+            const IOReturn status=view->complete();
+            if(status){viewCleanupError_=status;K70BootLog("K70 GPU: CPU view complete token %u status 0x%x retained\n",token,status);return status;}
         }
         view->release();
         if(removed && (native_adreno_metal_diag.forced_unmaps<=16 ||
@@ -382,46 +386,57 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
     if(!views_)views_=IONewZero(View,MaxViews);
     if(!views_) {IOLockUnlock(g.lock);return kIOReturnNoMemory;}
     for(size_t i=0;i<MaxViews;++i)if(views_[i].descriptor && views_[i].token==type) {
-        views_[i].descriptor->retain();*memory=views_[i].descriptor;*options=kIOMapAnywhere|kIOMapInhibitCache;
+        views_[i].descriptor->retain();*memory=views_[i].descriptor;*options=kIOMapAnywhere|kIOMapWriteCombineCache;
         native_adreno_view_diag[2]=native_adreno_view_diag[2]+1;
         IOLockUnlock(g.lock);
         return kIOReturnSuccess;
     }
     NativeAdrenoMemory *backing=live_?core_->memoryForToken(type):nullptr;
     if(backing) {
-        /* The BO's pages are cached in the kernel and the GPU's PTEs are non-cacheable, so the client needs an uncached
-         * view. A mapping of the buffer descriptor with a different cache mode is not reliable, so describe the same raw
-         * physical spans (the ones the SMMU maps) and ask for kIOMapInhibitCache, exactly how the board code maps the
-         * ring and the GMU windows. The descriptor does not retain the pages: the client must unmap before BoCpuUnmap/BoFree. */
-        /* A BO's pages can come scattered, one span per page (a 64 MiB BO is 16384 of them): the descriptor takes them all, as many as the GPU's
-         * own table accepts. A fixed 64-entry array made every scattered BO above 256 KiB fail to map (VK_ERROR_MEMORY_MAP_FAILED, int-084),
-         * only when memory happened to be fragmented. The descriptor copies the ranges. */
-        enum {MaxSpans=65536};
-        const size_t count=backing->spanCount();
-        if(!count || count>MaxSpans)status=kIOReturnNoResources;
+        /* These are allocator-owned RAM pages, with a retained kernel VM
+         * mapping. A raw physical descriptor creates a device pager for them
+         * and triggers a managed-page report/backtrace for every 16K page.
+         * Use a persistent VM entry for exactly this BO's owned range instead.
+         * Existing write-combined page attributes and SMMU spans are retained;
+         * compare every span before exposing the view. */
+        const auto address=reinterpret_cast<mach_vm_address_t>(backing->mapping());
+        const size_t bytes=backing->ownedBytes();
+        IOMemoryDescriptor *descriptor=nullptr;
+        if(!address || !bytes || bytes>UINTPTR_MAX-address || !backing->writeCombined())status=kIOReturnUnsupported;
+        else descriptor=IOMemoryDescriptor::withAddressRange(address,bytes,
+            kIODirectionInOut|kIOMemoryMapperNone|kIOMemoryPersistent,kernel_task);
+        if(!descriptor) {if(status==kIOReturnNotFound)status=kIOReturnNoMemory;}
         else {
-            IOAddressRange *ranges=IONewData(IOAddressRange,count);
-            if(!ranges)status=kIOReturnNoMemory;
-            else {
-                for(size_t i=0;i<count;++i)ranges[i]={backing->spans()[i].physical,backing->spans()[i].bytes};
-                IOMemoryDescriptor *descriptor=IOMemoryDescriptor::withAddressRanges(ranges,(UInt32)count,
-                    static_cast<IOOptionBits>(kIODirectionInOut)|static_cast<IOOptionBits>(kIOMemoryTypePhysical64),nullptr);
-                IODeleteData(ranges,IOAddressRange,count);
-                if(!descriptor)status=kIOReturnNoMemory;
-                else {
-                    bool cached=false;
-                    for(size_t i=0;i<MaxViews;++i)if(!views_[i].descriptor) {views_[i].token=type;views_[i].descriptor=descriptor;descriptor->retain();cached=true;break;}
-                    if(!cached) {
-                        /* Never hand out a view that cannot be torn down again. */
-                        descriptor->release();
-                        status=kIOReturnNoResources;
-                    } else {
-                        *memory=descriptor;
-                        *options=kIOMapAnywhere|kIOMapInhibitCache;
-                        native_adreno_view_diag[1]=native_adreno_view_diag[1]+1;
-                        status=kIOReturnSuccess;
+            status=descriptor->prepare();
+            bool prepared=!status;
+            if(prepared) {
+                if(descriptor->getLength()!=bytes || !backing->spanCount())status=kIOReturnUnsupported;
+                for(size_t i=0;!status && i<backing->spanCount();++i) {
+                    const auto &span=backing->spans()[i];uint64_t done=0;
+                    while(done<span.bytes) {
+                        IOByteCount length=0;
+                        const uint64_t physical=descriptor->getPhysicalSegment(span.offset+done,&length,kIOMemoryMapperNone);
+                        if(physical!=span.physical+done || !length){status=kIOReturnUnsupported;break;}
+                        done+=length<span.bytes-done?length:span.bytes-done;
                     }
                 }
+            }
+            bool cached=false;
+            if(!status)for(size_t i=0;i<MaxViews;++i)if(!views_[i].descriptor) {
+                views_[i]={type,descriptor,true};descriptor->retain();cached=true;break;
+            }
+            if(!cached) {
+                if(!status)status=kIOReturnNoResources;
+                const IOReturn cleanup=prepared?descriptor->complete():kIOReturnSuccess;
+                if(cleanup){viewCleanupError_=cleanup;status=cleanup;}
+                else descriptor->release();
+            } else {
+                *memory=descriptor;*options=kIOMapAnywhere|kIOMapWriteCombineCache;
+                native_adreno_view_diag[1]=native_adreno_view_diag[1]+1;
+                if(native_adreno_view_diag[1]<=16 || !(native_adreno_view_diag[1]&127))
+                    K70BootLog("K70 GPU: VM CPU view token %u bytes %llu spans %llu writecombined 1 verified
+",type,(unsigned long long)bytes,(unsigned long long)backing->spanCount());
+                status=kIOReturnSuccess;
             }
         }
     }
