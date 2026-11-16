@@ -28,7 +28,6 @@
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <kern/misc_protos.h>
-#include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 #include "QcomXnuUsbDebug.h"
 

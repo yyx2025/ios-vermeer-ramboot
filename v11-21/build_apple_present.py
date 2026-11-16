@@ -64,6 +64,14 @@ def compile(source,output,cpp=True,native_relative=None):
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
                        'K70UsbConsole.c', 'QcomXnuUsbDebug.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
+    if source.name == 'K70UsbConsole.c':
+        # <kern/thread.h> pulls osfmk/arm/simple_lock.h, which includes the
+        # generated <mach_ldebug.h>. That header only exists in the osfmk
+        # build directory; the real XNU makefile gets it from the unit's cwd.
+        # Point at it explicitly instead of moving cwd there, because the
+        # osfmk cwd order pulls bsd/sys/types.h in ahead of the kernel types
+        # and every typedef then conflicts.
+        extra += ['-I', str(B/'osfmk'/'DEVELOPMENT')]
     if 'replacements/qud' in str(source) or source.name == 'K70UsbConsole.c':
         # The SoC profile is selected by macro, exactly as the module's own
         # build.py does with --soc; Sm8550.h holds the kalama GCC/DWC3/QSMMU
@@ -145,8 +153,7 @@ for name in ('usb/Dwc3.c','soc/QcomUsbQualify.c','soc/QcomUsbDmaDomain.c',
     target=OUT/('qud-'+Path(name).stem+'.o')
     compile(W/'replacements/qud'/name,target,False)
     qud_objects.append(target)
-compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False,
-        'osfmk/arm64/K70UsbConsole.c')
+compile(W/'replacements/drivers/K70/K70UsbConsole.c',OUT/'K70UsbConsole.o',False)
 qud_objects.append(OUT/'K70UsbConsole.o')
 compile(W/'SoftwareAES/NativeAES.cpp',OUT/'NativeAES.o')
 
