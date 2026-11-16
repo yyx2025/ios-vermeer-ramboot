@@ -56,7 +56,7 @@ def compile(source,output,cpp=True,native_relative=None):
     # With that define <osfmk/string.h> asks for a bare <types.h>, so a shim
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
-    if source.name in ('cpu.c', 'machine_routines.c', 'start.s', 'sleh.c'):
+    if source.name in ('cpu.c', 'machine_routines.c', 'start.s'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
     args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
@@ -68,6 +68,27 @@ def compile(source,output,cpp=True,native_relative=None):
     print('Compile',source.name,result.returncode,flush=True)
     if result.returncode:print(result.stderr[-8000:]);raise SystemExit(result.returncode)
     checks.append(dict(source=str(source.relative_to(W)),source_sha256=sha(source),object=str(output),object_sha256=sha(output),bytes=output.stat().st_size,exit_code=0))
+
+# DO NOT add osfmk/arm64/sleh.c to this table.
+#
+# v11.25 did, to get a fault-tolerant MMIO probe (record FAR/ESR and resume at
+# the next instruction instead of panicking).  That single-unit rebuild changed
+# the preprocessor environment of the whole translation unit: sleh.c gates its
+# interrupt entry on `#if USE_APPLEARMSMP`, and that macro only exists when a
+# board config (ARM64_BOARD_CONFIG_Txxxx) is on the command line.  The XNU
+# makefile passes one; this relink does not.  The result was a *different*
+# sleh_irq:
+#
+#   shipped object : mrs x24, icc_iar1_el1 ... (Acknowledge, dispatch, EOI)
+#   v11.25 object  : ldr x8, [cdp, #0xd0]; blr x8   <- cdp->interrupt_handler
+#
+# In an AppleSMP kernel nothing ever fills in cpu_data.interrupt_handler, so the
+# first interrupt -- which arrives long before any of the GICR work -- branched
+# to address 0 and the machine died with
+#   Kernel instruction fetch abort at pc 0x0, esr 0x86000005 (_sleh_irq+0x40).
+# Passing -DARM64_BOARD_CONFIG_* instead would drag MAX_CPUS/PMAP_CS/XNU_MONITOR
+# and friends into one unit that disagrees with the other 500, which is worse.
+# The GICR layout is therefore obtained from the device tree, not by probing.
 
 units={
  'iokit/Kernel/arm/SweetSurface.cpp':('iokit/DEVELOPMENT/SweetSurface.cpo',True),
@@ -82,11 +103,9 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
- # v11.25 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ # v11.26 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
  'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
- # v11.25 guarded MMIO probe: a bus error on an unimplemented GICR address is
- # recorded and the instruction skipped instead of panicking the machine
- 'osfmk/arm64/sleh.c':('osfmk/DEVELOPMENT/sleh.o',False),
+ # osfmk/arm64/sleh.c is deliberately NOT rebuilt.  See the note below.
 }
 
 def object_path(output):
