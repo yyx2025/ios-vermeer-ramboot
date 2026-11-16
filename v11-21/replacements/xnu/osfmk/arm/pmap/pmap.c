@@ -41,7 +41,7 @@
 #include <kern/bits.h>
 #if defined(K70_NATIVE_RUNTIME_TRUST)
 #include <kern/backtrace.h>
-#include <sys/systm.h>
+#include <kern/misc_protos.h>
 #include "QcomXnuUsbDebug.h"
 #endif
 #include <kern/ecc.h>
