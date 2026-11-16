@@ -133,7 +133,7 @@ static int arena_alloc(void)
     return 1;
 }
 
-/* v11.29, real-device panic fix.
+/* v11.30, real-device panic fix.
  *
  * v11.28 printed "K70 USB: controller takeover starting" and then died in
  *   zalloc.c:6675 Assertion failed: startup_phase < STARTUP_SUB_EARLY_BOOT ||

@@ -255,7 +255,7 @@ extern kmod_info_t g_kernel_kmod_info;
 extern "C" void k70_aes_static_init(void) __asm__("__GLOBAL__sub_I_NativeAES.cpp");
 extern "C" IOReturn k70_aes_start(void)
 {
-  /* v11.29: one line per step. v11.27 died right after the first line of this
+  /* v11.30: one line per step. v11.27 died right after the first line of this
    * function and the panel gave no clue which call it was inside, because the
    * caller's "K70 AES: startup status" line never printed. Every stage below
    * now announces itself, so the next screenshot names the exact call. */

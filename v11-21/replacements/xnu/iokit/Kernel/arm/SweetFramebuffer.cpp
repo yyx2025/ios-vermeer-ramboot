@@ -139,7 +139,7 @@ public:
 	bool          fConsolePaused;
 	struct vframe_refs fPendingRefs; /* owning refs, transferred with the record */
 	uint8_t       fPending[SWEET_FB_SWAP_REC_SIZE];     /* latest swap, not yet shown */
-	/* v11.29: one preallocated hand-off copy. The vsync timer used to
+	/* v11.30: one preallocated hand-off copy. The vsync timer used to
 	 * IOMallocData/IOFreeData this record on every flushed frame, which is a
 	 * 1 KiB alloc/free pair at display rate -- exactly the kind of churn that
 	 * fragments the kalloc zones of a kernel that is already running out of
