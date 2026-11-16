@@ -1,84 +1,32 @@
-name: K70 v11.21 present fast-path kernel relink
+name: K70 v11.37 iOS16 Metal runtime
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
-  build:
-    runs-on: macos-15-intel
-    timeout-minutes: 45
+  runtime:
+    runs-on: macos-15
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: 148439fe8dbba8d51c5ceefb505551c0970b1218
-          path: retained-driver-source
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: xnu-link-inputs
-          path: retained-link-inputs
-          run-id: 43076755379
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: xnu-buildtree
-          path: retained-buildtree
-          run-id: 43076755379
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: k70-v11-integration
-          path: gpu-driver-build
-          run-id: 43091498480
-          github-token: ${{ github.token }}
-      - name: Extract verified retained inputs
-        run: |
-          mkdir dxb
-          tar xzf retained-link-inputs/link-inputs.tgz -C dxb
-          tar xzf retained-buildtree/buildtree.tgz -C dxb
-          python3 - <<'PY'
-          from pathlib import Path
-          import base64,hashlib,json
-          c=json.loads(Path('v11-12/link-config.json').read_text())['ath12k']
-          b=base64.b64decode(''.join((Path('v11-gpu-link')/n).read_text().strip() for n in c['chunks']),validate=True)
-          assert len(b)==c['bytes'] and hashlib.sha256(b).hexdigest()==c['sha256']
-          Path('ath12k.a').write_bytes(b)
-          PY
-      - name: Compile present fast path and relink the kernel
-        run: |
-          brew install llvm
-          python3 v11-21/build_apple_present.py
-      - name: Report present fast path and SMP symbols
-        if: always()
-        run: |
-          r=v11-21-result
-          if [ -f "$r/kernel.firmware-slots" ]; then
-            for s in _sweet_secondary_entry _sweet_cpu_signal_is_enabled; do
-              if xcrun nm -g -m "$r/kernel.firmware-slots" | grep -q " $s\$"; then
-                echo "present $s"
-              else
-                echo "::error::missing $s"
-              fi
-            done
-            printf 'present fast path strings: '
-            strings -a "$r/kernel.firmware-slots" | grep -c 'present fast path' || true
-            printf 'single-CPU panic strings: '
-            strings -a "$r/kernel.firmware-slots" | grep -c 'only single-CPU bring-up' || true
-          else
-            echo '::error::no linked kernel'
-          fi
+      - name: Check plugin with the actual iOS SDK
+        run: xcrun --sdk iphoneos clang++ -target arm64-apple-ios16.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -std=c++17 -fobjc-arc -fblocks -fsyntax-only -I gpu-runtime/drivers/NativeAdreno gpu-runtime/drivers/NativeMetal/NativeAdrenoMetalPlugin.mm
+      - name: Install build dependencies
+        run: brew install llvm bison glslang ninja
+      - name: Build iOS16 Metal bridge and cache-enabled Turnip
+        run: python3 gpu-runtime/build_runtime.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: k70-v11-21-present-relink
+          name: k70-v11-37-runtime
+          include-hidden-files: true
           path: |
-            v11-21-result/kernel.firmware-slots
-            v11-21-result/*.json
-            v11-21-result/*.txt
-            v11-21-result/*.log
-            v11-21-result/*.S
+            gpu-runtime/build/NativeAdrenoMetal.bundle
+            gpu-runtime/build/runtime-report.json
+            gpu-runtime/build/native-metal-bridge/*.log
+            gpu-runtime/.cache/*-ios-*.log
+            gpu-runtime/build/mesa-tu-ios/builtin-build-profile.json
+            gpu-runtime/build/mesa-tu-ios/meson-info/intro-buildoptions.json
           retention-days: 7
