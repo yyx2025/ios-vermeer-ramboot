@@ -88,6 +88,26 @@ k70_usb_console_active(void)
 /* The module calls this through a weak_import when the controller reaches
  * QCOM_USB_DEBUG_ACTIVE, so the panel gets the confirmation even before the
  * host has attached its terminal. */
+/* The module's control path can ask the consumer to hand the port back to the
+ * bootloader for a normal reset. This port has no qualified fastboot reset
+ * conduit and the framed control channel is not enabled, so the honest answer
+ * is a refusal: reset requests must never silently reboot the machine. */
+int
+boot_reset_bootloader(char *why, unsigned int length)
+{
+	static const char reason[] = "K70: no fastboot reset conduit";
+
+	if (why && length) {
+		unsigned int i = 0;
+		while (reason[i] && i + 1 < length) {
+			why[i] = reason[i];
+			i++;
+		}
+		why[i] = 0;
+	}
+	return -1;
+}
+
 void
 boot_progress_persist(const char *text, uint32_t colour)
 {
