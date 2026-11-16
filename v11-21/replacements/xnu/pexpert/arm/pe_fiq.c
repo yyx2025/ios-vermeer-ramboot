@@ -68,6 +68,67 @@ _gic_write32(vm_offset_t addr, uint32_t value)
 #define gicr_write32(offset, data) (_gic_write32(gicr_pe_base + (offset), (data)))
 #define gicr_read64(offset) (_gic_read64(gicr_pe_base + (offset)))
 
+#if defined(SWEET)
+/*
+ * Fault-tolerant device access.
+ *
+ * sleh.c (also rebuilt in this kernel) exports these: when a probe is active
+ * and the access takes a synchronous external abort, the data-abort handler
+ * records FAR/ESR and resumes at the following instruction instead of
+ * panicking.  That turns "guess the GICR layout and lose the boot" into
+ * "read the layout out of the hardware", which is what this file needs.
+ */
+extern volatile int sweet_mmio_probe_active;
+extern volatile unsigned long long sweet_mmio_probe_far;
+extern volatile unsigned long long sweet_mmio_probe_esr;
+
+static int
+sweet_probe_read32(vm_offset_t addr, uint32_t *value)
+{
+	sweet_mmio_probe_far = 0;
+	sweet_mmio_probe_esr = 0;
+	sweet_mmio_probe_active = 1;
+	__asm__ volatile("dsb sy" ::: "memory");
+	uint32_t v = *((volatile uint32_t *) addr);
+	__asm__ volatile("dsb sy" ::: "memory");
+	int faulted = (sweet_mmio_probe_active == 0);
+	sweet_mmio_probe_active = 0;
+	if (faulted) {
+		*value = 0;
+	} else {
+		*value = v;
+	}
+	return faulted;
+}
+
+static int
+sweet_probe_write32(vm_offset_t addr, uint32_t value)
+{
+	sweet_mmio_probe_far = 0;
+	sweet_mmio_probe_esr = 0;
+	sweet_mmio_probe_active = 1;
+	__asm__ volatile("dsb sy" ::: "memory");
+	*((volatile uint32_t *) addr) = value;
+	__asm__ volatile("dsb sy" ::: "memory");
+	int faulted = (sweet_mmio_probe_active == 0);
+	sweet_mmio_probe_active = 0;
+	return faulted;
+}
+
+/* Offsets inside a redistributor frame (frame-relative, per GICv3). */
+#define SWEET_GICR_CTLR          0x0000
+#define SWEET_GICR_SGI_IGROUPR0  0x0080
+#define SWEET_GICR_SGI_ISENABLER 0x0100
+#define SWEET_GICR_SGI_ICENABLER 0x0180
+#define SWEET_GICR_SGI_PRIORITY  0x0400
+
+static vm_offset_t
+sweet_gicr_page(vm_offset_t frame, vm_offset_t page)
+{
+	return frame + page;
+}
+#endif /* SWEET */
+
 static vm_offset_t
 find_gicr_pe_base()
 {
@@ -199,109 +260,177 @@ pe_init_fiq()
 	// Find the redistributor for this processor
 #if defined(SWEET)
 	/*
-	 * Never walk GICR_TYPER speculatively.  On vermeer the redistributor
-	 * frames are only partly implemented, and reading a frame that is not
-	 * raises a synchronous external abort.  XNU's synchronous handler has no
-	 * case for that ESR class (EC 0x10), so it falls into handle_uncategorized
-	 * and prints "Undefined kernel instruction" at a perfectly valid
-	 * instruction -- which is exactly what v11.21/v11.22 panicked with, on
-	 * cpu 1, inside find_gicr_pe_base().  The boot CPU never saw it because
-	 * frame 0 belongs to it and it returns on the first comparison.
+	 * v11.25: discover the redistributor, do not compute it.
 	 *
-	 * The ADT lists cpuN with MPIDR N<<8 and the frames are in MPIDR order,
-	 * so the frame index is the logical CPU number.  Bound the result with
-	 * gicr_size and only fall back to the (now logged) walk if the index does
-	 * not fit, so a wrong assumption degrades into a readable probe log
-	 * instead of an unexplained abort.
+	 * Three hardware facts forced this rewrite:
+	 *
+	 *  - The vendor DTB declares redistributor-stride = 0x40000 on kalama.
+	 *    GICR_PE_SIZE is 0x20000, and the ADT carries no stride property at
+	 *    all, so "frame = cpu * 0x20000" is wrong for every secondary.
+	 *  - A cold-boot redistributor answers WAKER = 0x6
+	 *    (ProcessorSleep | ChildrenAsleep).  Clearing ProcessorSleep does
+	 *    make ChildrenAsleep drop, i.e. the architectural wake-up sequence
+	 *    completes ... and the very first 32-bit write to frame + 0x10080
+	 *    (GICR_IGROUPR0) still returns ESR 0x96000010, a synchronous
+	 *    external abort.  That is the v11.23/v11.24 panic on cpu 0.
+	 *  - Therefore the SGI page offset inside the frame must not be assumed
+	 *    to be 0x10000 either.
+	 *
+	 * So both offsets are located by probing, and every probe is guarded by
+	 * the fault-tolerant accessor above: a bus error costs a log line
+	 * instead of the boot.  The SGI page is then identified by writing
+	 * GICR_ISENABLER0 and reading it back -- a page whose enable bits do
+	 * not stick is not a GIC SGI page and is left alone.
 	 */
 	unsigned int sweet_cpu = ml_get_cpu_number_local();
-	vm_offset_t gicr_pe_base;
-	if (gicr_base != 0 && gicr_size > 0 &&
-	    ((vm_offset_t)sweet_cpu * GICR_PE_SIZE) + GICR_PE_SIZE <= gicr_size) {
-		gicr_pe_base = gicr_base + ((vm_offset_t)sweet_cpu * GICR_PE_SIZE);
-		kprintf("SWEET GIC: cpu=%u gicd=0x%lx gicr=0x%lx size=0x%lx frame=0x%lx (index)\n",
-		    sweet_cpu, (unsigned long)gicd_base, (unsigned long)gicr_base,
-		    (unsigned long)gicr_size, (unsigned long)gicr_pe_base);
-	} else {
-		gicr_pe_base = find_gicr_pe_base();
-		kprintf("SWEET GIC: cpu=%u frame=0x%lx (walk)\n",
-		    sweet_cpu, (unsigned long)gicr_pe_base);
+	uint32_t want_aff = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") &
+	    (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
+	vm_offset_t rd_off = 0;
+	uint64_t rd_typer = 0;
+	unsigned int rd_found = 0, rd_faults = 0, rd_probes = 0;
+	vm_offset_t sgi_off = 0;
+	unsigned int sgi_found = 0, sgi_writable = 0;
+	uint32_t waker_before = 0, waker_after = 0, sgi_enables = 0;
+	unsigned int wake_ok = 0;
+
+	if (!sweet_gic_ppi) {
+		/*
+		 * sweetgic=0: touch nothing in the GICR region.  This is the
+		 * control arm -- if the boot reaches the desktop this way, the
+		 * per-core SGI frame programming is not what keeps it alive.
+		 */
+		kprintf("SWEET GIC: cpu=%u GICR left untouched (sweetgic=0)\n", sweet_cpu);
+		goto sweet_gicr_done;
 	}
-#else
-	vm_offset_t gicr_pe_base = find_gicr_pe_base();
-#endif
 
-#if defined(SWEET)
 	/*
-	 * Wake the redistributor before *any* byte of the 64 KB SGI frame is
-	 * touched, then prove that the frame really belongs to this core.
-	 *
-	 * Architected order is: clear GICR_WAKER.ProcessorSleep, wait for
-	 * ChildrenAsleep to drop, and only then program frame + 0x10000.  Apple's
-	 * code (the #else branch) performs that wake-up only when the first WAKER
-	 * read still reports ChildrenAsleep, which is safe on Apple silicon
-	 * because its redistributors come out of reset awake.  vermeer's do not
-	 * always: on a cold boot the redistributor power domain can be off, WAKER
-	 * then reads back as 0 (so the "children asleep" test is false and the
-	 * wake-up is skipped), and the first write into the SGI frame returns a
-	 * synchronous external abort -- ESR 0x96000010, DFSC 0x10 -- which XNU
-	 * reports as "Kernel data abort".  That is what killed v11.23 on cpu 0,
-	 * at the GICR_IGROUPR0 store in this function.
+	 * 1. Which 64 KB page of the GICR region reports this core's affinity?
+	 *    Reads only, and every read is guarded.  The stride is whatever the
+	 *    hardware uses (0x10000 granularity covers 0x20000 and 0x40000).
 	 */
-	uint32_t waker_before = gicr_read32(GICR_WAKER);
-	gicr_write32(GICR_WAKER, waker_before & ~(uint32_t)GICR_WAKER_PROCESSORSLEEP);
-
-	unsigned int wake_ok = 1;
-	uint64_t gicr_wake_deadline;
-	nanoseconds_to_deadline(os_atomic_load(&gicr_wake_timeout_ns, relaxed), &gicr_wake_deadline);
-	while (gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDRENASLEEP) {
-		if (gicr_wake_timeout_ns > 0 && mach_absolute_time() > gicr_wake_deadline) {
-			wake_ok = 0;
+	for (vm_offset_t off = 0; off + GICR_TYPER + 8 <= gicr_size; off += 0x10000) {
+		uint32_t lo = 0, hi = 0;
+		rd_probes++;
+		if (sweet_probe_read32(gicr_base + off + GICR_TYPER, &lo) ||
+		    sweet_probe_read32(gicr_base + off + GICR_TYPER + 4, &hi)) {
+			rd_faults++;
+			continue;
+		}
+		uint64_t typer = ((uint64_t)hi << 32) | (uint64_t)lo;
+		uint32_t aff = (uint32_t)(typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) &
+		    (uint32_t)(MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+		if (aff == want_aff) {
+			rd_off = off;
+			rd_typer = typer;
+			rd_found = 1;
+			break;
+		}
+		if (typer & GICR_TYPER_LAST) {
 			break;
 		}
 	}
 
 	/*
-	 * GICR_TYPER sits in the RD half of the frame (offset 0x8), i.e. in the
-	 * same 16 KB page as WAKER, so reading it cannot be the access that used
-	 * to abort.  Its Affinity_Value is an independent check that gicr_pe_base
-	 * really is this core's frame: if the frame index assumption is ever
-	 * wrong, the boot log says so instead of taking an external abort on the
-	 * SGI page.
+	 * 2. Wake the redistributor: clear ProcessorSleep, then wait for
+	 *    ChildrenAsleep to drop, bounded by gicr-wake-timeout.
 	 */
-	uint64_t gicr_typer = gicr_read64(GICR_TYPER);
-	uint32_t typer_aff = (uint32_t)(gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) &
-	    (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
-	uint32_t want_aff = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") &
-	    (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
-	unsigned int aff_ok = (typer_aff == want_aff);
-
-	kprintf("SWEET GIC: cpu=%u frame=0x%lx typer=0x%llx aff=0x%x want=0x%x waker=0x%x->0x%x wake=%u\n",
-	    sweet_cpu, (unsigned long)gicr_pe_base, (unsigned long long)gicr_typer,
-	    typer_aff, want_aff, waker_before, gicr_read32(GICR_WAKER), wake_ok);
-
-	if (sweet_gic_ppi && wake_ok && aff_ok) {
-		/*
-		 * Real hardware with two security states: Group 0 is TrustZone's and
-		 * non-secure writes to it are ignored. Everything we own is Group 1 NS
-		 * and arrives as an IRQ (see sleh_irq). GICR_IGROUPR0 reads as zero
-		 * from the non-secure side even after this write; delivery still works.
-		 */
-		gicr_write32(GICR_IGROUPR0, 0xFFFFFFFF);
-		for (unsigned int i = 0; i < 32; i += 4) {
-			gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
+	if (rd_found) {
+		waker_before = _gic_read32(gicr_base + rd_off + GICR_WAKER);
+		_gic_write32(gicr_base + rd_off + GICR_WAKER,
+		    waker_before & ~(uint32_t)GICR_WAKER_PROCESSORSLEEP);
+		uint64_t gicr_wake_deadline;
+		nanoseconds_to_deadline(os_atomic_load(&gicr_wake_timeout_ns, relaxed), &gicr_wake_deadline);
+		for (;;) {
+			waker_after = _gic_read32(gicr_base + rd_off + GICR_WAKER);
+			if ((waker_after & GICR_WAKER_CHILDRENASLEEP) == 0) {
+				wake_ok = 1;
+				break;
+			}
+			if (gicr_wake_timeout_ns > 0 && mach_absolute_time() > gicr_wake_deadline) {
+				break;
+			}
 		}
-		gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
+	}
+
+	/*
+	 * 3. Where is the SGI/PPI page inside that frame?  Architected offset is
+	 *    +0x10000; a vendor layout that pads the frame differently would put
+	 *    it at +0x20000 or +0x30000, so all three are tried.
+	 */
+	if (rd_found) {
+		static const vm_offset_t candidates[] = { 0x10000, 0x20000, 0x30000, 0 };
+		for (unsigned int i = 0; candidates[i] != 0; i++) {
+			uint32_t probe = 0;
+			if (!sweet_probe_read32(
+			    sweet_gicr_page(gicr_base + rd_off, candidates[i]) +
+			    SWEET_GICR_SGI_ISENABLER, &probe)) {
+				sgi_off = candidates[i];
+				sgi_found = 1;
+				break;
+			}
+		}
+	}
+
+	/*
+	 * 4. Identity check: does the page actually hold SGI/PPI enable bits?
+	 *    Writing all ones to GICR_ISENABLER0 and reading it back is the
+	 *    cheapest way to tell a GIC SGI page from a hole or a foreign block.
+	 *    A page that reads back zero implements none of INTIDs 0..31 and is
+	 *    not used.
+	 */
+	if (sgi_found) {
+		vm_offset_t isen = sweet_gicr_page(gicr_base + rd_off, sgi_off) +
+		    SWEET_GICR_SGI_ISENABLER;
+		if (!sweet_probe_write32(isen, 0xFFFFFFFFu) &&
+		    !sweet_probe_read32(isen, &sgi_enables) && sgi_enables != 0) {
+			sgi_writable = 1;
+		}
+	}
+
+	kprintf("SWEET GIC: cpu=%u rd=0x%lx typer=0x%llx sgi=0x%lx wr=%u waker=0x%x->0x%x wake=%u en=0x%x faults=%u/%u\n",
+	    sweet_cpu, (unsigned long)rd_off, (unsigned long long)rd_typer,
+	    (unsigned long)sgi_off, sgi_writable, waker_before, waker_after,
+	    wake_ok, sgi_enables, rd_faults, rd_probes);
+
+	if (sgi_writable) {
+		vm_offset_t sgi = sweet_gicr_page(gicr_base + rd_off, sgi_off);
+
+		/* Start from a clean slate: nothing pending, nothing enabled. */
+		_gic_write32(sgi + SWEET_GICR_SGI_ICENABLER, 0xFFFFFFFFu);
+
+		/*
+		 * Real hardware with two security states: Group 0 is TrustZone's
+		 * and non-secure writes to it are ignored.  Everything we own is
+		 * Group 1 NS and arrives as an IRQ (see sleh_irq).
+		 * GICR_IGROUPR0 reads back as zero from the non-secure side even
+		 * after this write; delivery still works.
+		 */
+		_gic_write32(sgi + SWEET_GICR_SGI_IGROUPR0, 0xFFFFFFFFu);
+		for (unsigned int i = 0; i < 32; i += 4) {
+			_gic_write32(sgi + SWEET_GICR_SGI_PRIORITY + i, 0xA0A0A0A0u);
+		}
+		_gic_write32(sgi + SWEET_GICR_SGI_ISENABLER,
+		    (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
+		kprintf("SWEET GIC: cpu=%u SGI page programmed at +0x%lx (ppi=%u sgi=%u)\n",
+		    sweet_cpu, (unsigned long)sgi_off, sweet_vtimer_intid, SWEET_IPI_SGI);
 	} else {
 		/*
-		 * Leave the SGI frame alone: it refused to wake, it belongs to another
-		 * core, or sweetgic=0 asked us to skip it.  Losing the timeout PPI is
-		 * recoverable and logged; taking the abort is not.
+		 * Without the timeout PPI (and, for secondaries, the IPI SGI) the
+		 * machine cannot make progress, and the panic text is the only
+		 * diagnostic that survives on screen -- the boot log above it is
+		 * pushed off by the panic dump.  Keep every number in one line.
 		 */
-		kprintf("SWEET GIC: cpu=%u SGI frame skipped (ppi=%u wake=%u aff=%u)\n",
-		    sweet_cpu, sweet_gic_ppi, wake_ok, aff_ok);
+		panic("SWEET GIC: cpu=%u no SGI page rd=0x%lx sgi=0x%lx typer=0x%llx en=0x%x waker=0x%x->0x%x wake=%u faults=%u/%u gicr=0x%lx size=0x%lx",
+		    sweet_cpu, (unsigned long)rd_off, (unsigned long)sgi_off,
+		    (unsigned long long)rd_typer, sgi_enables, waker_before,
+		    waker_after, wake_ok, rd_faults, rd_probes,
+		    (unsigned long)gicr_base, (unsigned long)gicr_size);
 	}
+
+sweet_gicr_done:
+	;
 #else
+	vm_offset_t gicr_pe_base = find_gicr_pe_base();
 	// Mark this PE to be awake
 	uint32_t gicr_waker = gicr_read32(GICR_WAKER);
 	if (gicr_waker & GICR_WAKER_CHILDRENASLEEP) {

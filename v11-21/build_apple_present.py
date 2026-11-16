@@ -56,7 +56,7 @@ def compile(source,output,cpp=True,native_relative=None):
     # With that define <osfmk/string.h> asks for a bare <types.h>, so a shim
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
-    if source.name in ('cpu.c', 'machine_routines.c', 'start.s'):
+    if source.name in ('cpu.c', 'machine_routines.c', 'start.s', 'sleh.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
     args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
@@ -82,8 +82,11 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
- # v11.24 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ # v11.25 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
  'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
+ # v11.25 guarded MMIO probe: a bus error on an unimplemented GICR address is
+ # recorded and the instruction skipped instead of panicking the machine
+ 'osfmk/arm64/sleh.c':('osfmk/DEVELOPMENT/sleh.o',False),
 }
 
 def object_path(output):
