@@ -82,7 +82,7 @@ units={
  'osfmk/arm64/start.s':('osfmk/DEVELOPMENT/start.o',False),
  # v11.21 present() fast path replaces the cached retained driver object
  'iokit/Kernel/arm/SweetFramebuffer.cpp':('iokit/DEVELOPMENT/SweetFramebuffer.cpo',True),
- # v11.23 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
+ # v11.24 per-CPU GIC redistributor selection (no speculative GICR_TYPER walk)
  'pexpert/arm/pe_fiq.c':('pexpert/DEVELOPMENT/pe_fiq.o',False),
 }
 

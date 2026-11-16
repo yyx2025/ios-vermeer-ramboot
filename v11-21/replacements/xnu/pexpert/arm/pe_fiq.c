@@ -3,6 +3,7 @@
  */
 
 #include <stdint.h>
+#include <mach/boolean.h>
 #include <libkern/section_keywords.h>
 #include <arm64/proc_reg.h>
 #include <kern/clock.h>
@@ -22,6 +23,7 @@
  * changing visibility for the whole file.
  */
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern boolean_t PE_parse_boot_argn(const char *arg_string, void *arg_ptr, int max_len);
 
 #define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
 MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
@@ -29,6 +31,13 @@ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS,
 #if defined(SWEET)
 /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
 SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
+/*
+ * "sweetgic=0" leaves the per-core SGI frame alone (see the wake-up block in
+ * pe_init_fiq).  Everything else -- ICC_SRE/PMR/IGRPEN1 and GICD_CTLR -- still
+ * runs, so this is a usable escape hatch when a redistributor cannot be woken:
+ * the boot continues, only the virtual-timer PPI and the SGI stay disabled.
+ */
+static uint32_t sweet_gic_ppi = 1;
 #endif
 
 static vm_offset_t gicd_base;
@@ -152,6 +161,24 @@ pe_init_fiq()
 		uint64_t const gicr_base_prop = ((uint64_t const *) prop)[2];
 		uint64_t const gicr_size_prop = ((uint64_t const *) prop)[3];
 
+#if defined(SWEET)
+		/*
+		 * The DT reg entries are relative to /arm-io ranges, so the absolute
+		 * addresses are soc_base + prop.  Print them (not the mapped VAs, which
+		 * are whatever io_map() handed out) so one photo of the boot log shows
+		 * which physical window the GIC is being driven at.
+		 */
+		uint32_t sweet_ppi_arg = 1;
+		if (PE_parse_boot_argn("sweetgic", &sweet_ppi_arg, sizeof(sweet_ppi_arg))) {
+			sweet_gic_ppi = sweet_ppi_arg ? 1 : 0;
+		}
+		kprintf("SWEET GIC: soc=0x%lx gicd_pa=0x%lx gicr_pa=0x%lx gicr_size=0x%lx ppi=%u\n",
+		    (unsigned long)soc_base_phys,
+		    (unsigned long)(soc_base_phys + gicd_base_prop),
+		    (unsigned long)(soc_base_phys + gicr_base_prop),
+		    (unsigned long)gicr_size_prop, sweet_gic_ppi);
+#endif
+
 		// Find GICD base address
 		gicd_base = ml_io_map(soc_base_phys + gicd_base_prop, gicd_size_prop);
 
@@ -204,6 +231,77 @@ pe_init_fiq()
 	vm_offset_t gicr_pe_base = find_gicr_pe_base();
 #endif
 
+#if defined(SWEET)
+	/*
+	 * Wake the redistributor before *any* byte of the 64 KB SGI frame is
+	 * touched, then prove that the frame really belongs to this core.
+	 *
+	 * Architected order is: clear GICR_WAKER.ProcessorSleep, wait for
+	 * ChildrenAsleep to drop, and only then program frame + 0x10000.  Apple's
+	 * code (the #else branch) performs that wake-up only when the first WAKER
+	 * read still reports ChildrenAsleep, which is safe on Apple silicon
+	 * because its redistributors come out of reset awake.  vermeer's do not
+	 * always: on a cold boot the redistributor power domain can be off, WAKER
+	 * then reads back as 0 (so the "children asleep" test is false and the
+	 * wake-up is skipped), and the first write into the SGI frame returns a
+	 * synchronous external abort -- ESR 0x96000010, DFSC 0x10 -- which XNU
+	 * reports as "Kernel data abort".  That is what killed v11.23 on cpu 0,
+	 * at the GICR_IGROUPR0 store in this function.
+	 */
+	uint32_t waker_before = gicr_read32(GICR_WAKER);
+	gicr_write32(GICR_WAKER, waker_before & ~(uint32_t)GICR_WAKER_PROCESSORSLEEP);
+
+	unsigned int wake_ok = 1;
+	uint64_t gicr_wake_deadline;
+	nanoseconds_to_deadline(os_atomic_load(&gicr_wake_timeout_ns, relaxed), &gicr_wake_deadline);
+	while (gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDRENASLEEP) {
+		if (gicr_wake_timeout_ns > 0 && mach_absolute_time() > gicr_wake_deadline) {
+			wake_ok = 0;
+			break;
+		}
+	}
+
+	/*
+	 * GICR_TYPER sits in the RD half of the frame (offset 0x8), i.e. in the
+	 * same 16 KB page as WAKER, so reading it cannot be the access that used
+	 * to abort.  Its Affinity_Value is an independent check that gicr_pe_base
+	 * really is this core's frame: if the frame index assumption is ever
+	 * wrong, the boot log says so instead of taking an external abort on the
+	 * SGI page.
+	 */
+	uint64_t gicr_typer = gicr_read64(GICR_TYPER);
+	uint32_t typer_aff = (uint32_t)(gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) &
+	    (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+	uint32_t want_aff = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") &
+	    (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK));
+	unsigned int aff_ok = (typer_aff == want_aff);
+
+	kprintf("SWEET GIC: cpu=%u frame=0x%lx typer=0x%llx aff=0x%x want=0x%x waker=0x%x->0x%x wake=%u\n",
+	    sweet_cpu, (unsigned long)gicr_pe_base, (unsigned long long)gicr_typer,
+	    typer_aff, want_aff, waker_before, gicr_read32(GICR_WAKER), wake_ok);
+
+	if (sweet_gic_ppi && wake_ok && aff_ok) {
+		/*
+		 * Real hardware with two security states: Group 0 is TrustZone's and
+		 * non-secure writes to it are ignored. Everything we own is Group 1 NS
+		 * and arrives as an IRQ (see sleh_irq). GICR_IGROUPR0 reads as zero
+		 * from the non-secure side even after this write; delivery still works.
+		 */
+		gicr_write32(GICR_IGROUPR0, 0xFFFFFFFF);
+		for (unsigned int i = 0; i < 32; i += 4) {
+			gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
+		}
+		gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
+	} else {
+		/*
+		 * Leave the SGI frame alone: it refused to wake, it belongs to another
+		 * core, or sweetgic=0 asked us to skip it.  Losing the timeout PPI is
+		 * recoverable and logged; taking the abort is not.
+		 */
+		kprintf("SWEET GIC: cpu=%u SGI frame skipped (ppi=%u wake=%u aff=%u)\n",
+		    sweet_cpu, sweet_gic_ppi, wake_ok, aff_ok);
+	}
+#else
 	// Mark this PE to be awake
 	uint32_t gicr_waker = gicr_read32(GICR_WAKER);
 	if (gicr_waker & GICR_WAKER_CHILDRENASLEEP) {
@@ -222,19 +320,6 @@ pe_init_fiq()
 		}
 	}
 
-#if defined(SWEET)
-	/*
-	 * Real hardware with two security states: Group 0 is TrustZone's and
-	 * non-secure writes to it are ignored. Everything we own is Group 1 NS
-	 * and arrives as an IRQ (see sleh_irq). GICR_IGROUPR0 reads as zero
-	 * from the non-secure side even after this write; delivery still works.
-	 */
-	gicr_write32(GICR_IGROUPR0, 0xFFFFFFFF);
-	for (unsigned int i = 0; i < 32; i += 4) {
-		gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
-	}
-	gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
-#else
 	// Configure timers and legacy FIQ to be group 0
 	gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);
 
