@@ -98,7 +98,6 @@ void *worker(void *argument) {
     delete w;return nullptr;
 }
 id open(unsigned port) {
-    setenv("METAL2VULKAN_LOG_PIPELINES","1",0);
     report(port,"discovery");NSBundle *bundle=[NSBundle bundleForClass:[NativeAdrenoMetalDevice class]];
     NSString *turnip=[bundle pathForResource:@"libvulkan_freedreno" ofType:@"dylib"];
     if(!turnip){report(port,"turnip-missing");return nil;}
@@ -141,8 +140,17 @@ id open(unsigned port) {
 - (id)initWithAcceleratorPort:(unsigned)port {
     self=[super init];if(!self || !port)return nil;
     @synchronized([NativeAdrenoMetalDevice class]) {
-        static bool attempted=false;static id device=nil;if(attempted)return device;attempted=true;
+        /* v42 previously latched nil forever after the first device-lost
+         * attempt, so a transient VK_ERROR_DEVICE_LOST kept backboardd from
+         * ever reaching presenter ready -> arm -> GPU completed (E1/E2/E3).
+         * Cache success only and allow bounded retries, matching v11.41's
+         * effective ability to recover its presenter path. */
+        static unsigned attempts=0;static id device=nil;
+        if(device)return device;
+        if(attempts>=8)return nil;
+        const unsigned attempt=++attempts;
         @try {device=open(port);} @catch(NSException *exception) {report(port,"open-exception",0,exception.name.UTF8String?:"?");device=nil;}
+        if(!device)report(port,"device-retry",(int)attempt,nmb_last_error());
         return device;
     }
 }
