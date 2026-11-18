@@ -40,6 +40,11 @@ flags=json.loads((W/'compile-flags.json').read_text())
 checks=[]
 def compile(source,output,cpp=True,native_relative=None):
     selected=flags['native'][native_relative] if native_relative in flags.get('native',{}) else flags['cpp' if cpp else 'c']
+    if native_relative=='osfmk/kern/work_interval.c':
+        # This new OSFMK unit requires the archived OSFMK compiler environment.
+        # The generic C template belongs to BSD; the pinned PRNG unit has the
+        # same subsystem defaults and no source-specific defines.
+        selected=flags['native']['osfmk/prng/prng_random.c']
     args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in selected]
     directory='iokit' if native_relative is None else native_relative.split('/')[0]
     cwd=B/directory/'DEVELOPMENT'
@@ -74,13 +79,10 @@ def compile(source,output,cpp=True,native_relative=None):
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
-                       'work_interval.c', 'sys_work_interval.c',
-                       'memdev.c', 'vermeer_ram_stream.c',
                        'K70UsbConsole.c', 'K70MemReport.c',
                        'QcomXnuUsbDebug.c', 'QcomUsbScreenshot.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
-    if source.name in ('K70UsbConsole.c', 'K70MemReport.c', 'work_interval.c',
-                       'sys_work_interval.c', 'memdev.c', 'vermeer_ram_stream.c') or 'replacements/qud' in str(source):
+    if source.name in ('K70UsbConsole.c', 'K70MemReport.c') or 'replacements/qud' in str(source):
         # <kern/thread.h> (directly, or through <IOKit/IOLib.h> for the
         # allocator) pulls osfmk/arm/simple_lock.h, which includes the
         # generated <mach_ldebug.h>. That header only exists in the osfmk
@@ -89,6 +91,12 @@ def compile(source,output,cpp=True,native_relative=None):
         # osfmk cwd order pulls bsd/sys/types.h in ahead of the kernel types
         # and every typedef then conflicts.
         extra += ['-I', str(B/'osfmk'/'DEVELOPMENT')]
+    if native_relative in ('osfmk/kern/work_interval.c','bsd/kern/sys_work_interval.c',
+                           'bsd/dev/memdev.c','bsd/dev/vermeer_ram_stream.c'):
+        # Replacement sources retain their original quoted-header lookup.
+        # Packed-RAM helpers live beside the archived bsd/dev source and are
+        # not installed in the generic BSD export include directory.
+        extra += ['-iquote', str(X/'xnu'/Path(native_relative).parent)]
     if 'replacements/qud' in str(source) or source.name == 'K70UsbConsole.c':
         # The SoC profile is selected by macro, exactly as the module's own
         # build.py does with --soc; Sm8550.h holds the kalama GCC/DWC3/QSMMU
