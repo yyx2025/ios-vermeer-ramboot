@@ -449,7 +449,7 @@ AppleCLCD::start(IOService *provider)
 	setProperty("external", false);
 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
 	/* Handoff remains inactive until the real Metal presenter is ready. */
-	if (k70_frame_register(fSurface->memory,fPhys,fWidth,fHeight,fRowBytes)!=kIOReturnSuccess) return false;
+	if (k70_frame_register(fSurface->memory,fPhys,fWidth,fHeight,fRowBytes,fPixels)!=kIOReturnSuccess) return false;
 	registerService();
 #if defined(K70_IOS16_IOKIT_ABI) && K70_IOS16_IOKIT_ABI
 	const IOReturn gpuStart=k70_gpu_start_worker();
@@ -631,16 +631,30 @@ AppleCLCD::frameInputs(const uint8_t *rec, const struct vframe_refs *refs, K70Fr
 			continue;
 		}
         uintptr_t src=s->kernelAddress();
-        uint32_t bpe=s->bytesPerElement ? s->bytesPerElement : 4;
+        K70PixelLayout layout{};
+        layout.bytes=s->memory?s->memory->getLength():0;layout.offset=s->offset;layout.format=s->pixelFormat;
+        layout.width=s->width;layout.height=s->height;layout.stride=s->bytesPerRow;layout.bpe=s->bytesPerElement;
+        layout.element_width=s->elementWidth;layout.element_height=s->elementHeight;layout.plane_count=s->planeCount;
+        for(unsigned n=0;n<2 && n<s->planeCount;++n) {
+            const auto &q=s->planes[n];
+            layout.plane[n]={q.offset,q.size,q.bytesPerRow,q.width,q.height,q.bytesPerElement,q.elementWidth,q.elementHeight};
+        }
+        const uint32_t stride=k70_pixel_color_stride(layout);
         if (w<=0 || h<=0) { w=(int32_t)s->width;h=(int32_t)s->height; }
         struct vframe_scale plan;
-        if (!src || bpe!=4 || s->elementWidth!=1 || s->elementHeight!=1 || !s->memory ||
-            !vframe_scale_plan(&plan,sx,sy,dx,dy,w,h,s->width,s->height,s->bytesPerRow,
-                s->offset,s->memory->getLength(),VERMEER_LOGICAL_W,VERMEER_LOGICAL_H,
+        if (!src || !s->memory || !k70_pixel_layout_valid(layout) ||
+            !vframe_scale_plan(&plan,sx,sy,dx,dy,w,h,s->width,s->height,stride,
+                k70_pixel_color_offset(layout),layout.bytes,VERMEER_LOGICAL_W,VERMEER_LOGICAL_H,
                 fWidth,fHeight,fRowBytes,(uint64_t)fRowBytes*fHeight)) {
-            if(report)os_atomic_inc(&vf_rejected,relaxed);continue;
+            if(report) {
+                os_atomic_inc(&vf_rejected,relaxed);
+                static unsigned refused;
+                if(refused++<8)IOLog("K70 PIXEL: rejected surface %u fmt %08x planes %u color stride %u bpe %u alpha stride %u bpe %u\n",
+                    id,layout.format,layout.plane_count,layout.plane[0].stride,layout.plane[0].bpe,layout.plane[1].stride,layout.plane[1].bpe);
+            }
+            continue;
         }
-        frames[frameCount++]={(const uint8_t *)src,s->memory->getLength(),s->bytesPerRow,plan};
+        frames[frameCount++]={(const uint8_t *)src,layout,plan,id};
 	}
     return frameCount;
 }
@@ -678,13 +692,37 @@ AppleCLCD::present(const uint8_t *rec, const struct vframe_refs *refs)
         const K70FrameInput &frame=frames[i];const vframe_scale &plan=frame.scale;
         const uint32_t width=plan.x1-plan.x0;
         if(width==0||width>SWEET_FB_MAX_W)continue;
+        if(frame.layout.format==K70_PIXEL_B3A8) {
+            const auto &layout=frame.layout;const uint32_t stride=k70_pixel_color_stride(layout);
+            const uint64_t crop=plan.src-k70_pixel_color_offset(layout);
+            const uint64_t alphaOrigin=layout.plane[1].offset+(crop/stride)*layout.plane[1].stride+(crop%stride)/4;
+            for(uint32_t y=plan.y0;y<plan.y1;++y) {
+                const uint32_t sy=vframe_scale_y(&plan,y);
+                const uint8_t *color=frame.base+plan.src+uint64_t(sy)*stride;
+                const uint8_t *alpha=frame.base+alphaOrigin+uint64_t(sy)*layout.plane[1].stride;
+                volatile uint32_t *target=(volatile uint32_t *)(fPixels+uint64_t(y)*fRowBytes);
+                for(uint32_t x=plan.x0;x<plan.x1;++x) {
+                    const uint32_t sx=vframe_scale_x(&plan,x);
+                    bool base=true;
+                    for(unsigned n=0;n<i;++n) {
+                        const auto &prior=frames[n].scale;
+                        if(x>=prior.x0 && x<prior.x1 && y>=prior.y0 && y<prior.y1){base=false;break;}
+                    }
+                    target[x]=k70_xr10_bgra(k70_pixel_word(color+uint64_t(sx)*4),alpha[sx],target[x],base);
+                }
+                ++fStatRows;
+            }
+            invalidateRows();
+            os_atomic_add(&vf_bytes,(uint64_t)width*(plan.y1-plan.y0)*4,relaxed);
+            continue;
+        }
         /* Nothing below depends on the clip rectangle any more: the source
          * index table was built once in start() and the span only selects
          * which part of the row is emitted. */
         const uint32_t code=(plan.x0<<16)|(plan.x1&0xffffu);
         /* Row builders that regenerate the whole row from column 0 need an
          * unclipped span and a source row that starts at column 0. */
-        const bool fromColumn0=plan.lx==0&&frame.stride!=0&&(plan.src%frame.stride)==0;
+        const bool fromColumn0=plan.lx==0&&k70_pixel_color_stride(frame.layout)!=0&&(plan.src%k70_pixel_color_stride(frame.layout))==0;
         const bool periodic=fromColumn0&&plan.x0==0&&plan.x1==fWidth&&
             plan.lw==VERMEER_LOGICAL_W&&fHPeriods!=0;
         const uint32_t replicate=(!fromColumn0||plan.pw>SWEET_FB_MAX_W)?0:
@@ -696,7 +734,7 @@ AppleCLCD::present(const uint8_t *rec, const struct vframe_refs *refs)
         for (uint32_t y=plan.y0;y<plan.y1;y++) {
             uint32_t source_y=(uint32_t)(((uint64_t)y*plan.lh)/plan.ph)-plan.ly;
             if(source_y!=previous) {
-                const uint8_t *row=frame.base+plan.src+(uint64_t)source_y*frame.stride;
+                const uint8_t *row=frame.base+plan.src+(uint64_t)source_y*k70_pixel_color_stride(frame.layout);
                 if(replicate){
                     /* Integer panel/canvas ratio: replicate, 1:1 is a memcpy. */
                     sweet_expand_replicate(row,scratch,replicate,plan.lw);

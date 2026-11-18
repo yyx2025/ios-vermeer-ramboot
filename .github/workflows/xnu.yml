@@ -1,4 +1,4 @@
-name: K70 v11.21 present fast-path kernel relink
+name: K70 v11.42 desktop and work interval compatibility
 on:
   workflow_dispatch:
 permissions:
@@ -48,7 +48,7 @@ jobs:
           assert len(b)==c['bytes'] and hashlib.sha256(b).hexdigest()==c['sha256']
           Path('ath12k.a').write_bytes(b)
           PY
-      - name: Compile present fast path and relink the kernel
+      - name: Compile v42 kernel replacements and relink
         run: |
           brew install llvm
           python3 v11-21/build_apple_present.py

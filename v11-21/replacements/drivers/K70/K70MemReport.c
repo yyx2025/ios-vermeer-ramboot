@@ -28,6 +28,7 @@ extern uint32_t vm_page_wire_count;
 extern uint32_t vm_page_active_count;
 extern uint32_t vm_page_inactive_count;
 extern uint32_t vm_page_speculative_count;
+extern int vm_compressor_mode;
 
 extern void k70_usb_console_line(const char *text);
 
@@ -72,10 +73,10 @@ k70_mem_thread(void *arg __unused, wait_result_t result __unused)
 		unsigned wire_mb = K70_MEM_MB(vm_page_wire_count);
 		unsigned inactive_mb = K70_MEM_MB(vm_page_inactive_count);
 
-		printf("K70 MEM: free=%uMB target=%uMB wire=%uMB active=%uMB inactive=%uMB spec=%uMB\n",
+		printf("K70 MEM: free=%uMB target=%uMB wire=%uMB active=%uMB inactive=%uMB spec=%uMB compressor_mode=%u\n",
 		    free_mb, K70_MEM_MB(vm_page_free_target), wire_mb,
 		    K70_MEM_MB(vm_page_active_count), inactive_mb,
-		    K70_MEM_MB(vm_page_speculative_count));
+		    K70_MEM_MB(vm_page_speculative_count), (unsigned)vm_compressor_mode);
 		/* Keep the same 15-second cadence on CDC so a short respring loop has
 		 * a usable memory record, including reclaimable active pages. */
 		{
@@ -91,7 +92,8 @@ k70_mem_thread(void *arg __unused, wait_result_t result __unused)
 			p = k70_mem_put_u32(p, inactive_mb);
 			p = k70_mem_put(p, "MB spec=");
 			p = k70_mem_put_u32(p, K70_MEM_MB(vm_page_speculative_count));
-			p = k70_mem_put(p, "MB");
+			p = k70_mem_put(p, "MB compressor_mode=");
+			p = k70_mem_put_u32(p, (unsigned)vm_compressor_mode);
 			*p = 0;
 			k70_usb_console_line(line);
 		}

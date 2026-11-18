@@ -113,7 +113,7 @@ SweetSurface::kernelAddress()
 	}
 	IOLockLock(sweet_surface_lock);
 	if (kernelMap == NULL && memory != NULL) {
-		kernelMap = memory->map(kIOMapWriteCombineCache);
+		kernelMap = memory->map(kIOMapWriteCombineCache | kIOMapUnique);
 	}
 	IOLockUnlock(sweet_surface_lock);
 	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() : 0;

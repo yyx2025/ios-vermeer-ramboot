@@ -22,6 +22,13 @@
 #include "K70BootLog.h"
 
 extern "C" void proc_selfname(char *, int);
+/* NativeAdrenoCpu.cpp updates bytes/passes atomically; Vm.cpp owns the
+ * coherent gate and its skip counters. Read them only at existing fence-log
+ * samples, after the wait path has acquired completed imported writes. */
+extern "C" {
+extern volatile uint64_t native_adreno_cache_stats[5];
+extern volatile uint32_t native_adreno_io_coherent,native_adreno_coherent_skips[4];
+}
 /* The plugin's telemetry table (rows of text the Metal bridge keeps), sent as markers: 0xC000|row starts a row, 0x8000|(a<<7)|b appends two characters. */
 extern "C" {char native_adreno_metal_rows[48][96];volatile uint32_t native_adreno_metal_rows_seq;}
 
@@ -366,7 +373,7 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
         scanout->retain();                      /* handoff returns a borrowed descriptor */
         *memory=scanout;
         K70BootLog("K70 FRAME: scanout descriptor returned bytes %llu\n",(unsigned long long)scanout->getLength());
-        *options=kIOMapAnywhere|kIOMapInhibitCache;   /* firmware framebuffer: device memory, never cached by the CPU */
+        *options=kIOMapAnywhere|kIOMapWriteCombineCache|kIOMapUnique; /* same Normal-NC framebuffer attribute as its verified kernel view */
         return kIOReturnSuccess;
     }
     if(type==NativeAdrenoMailboxType) {
@@ -503,7 +510,14 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     }
     if(!status && method==NativeAdrenoMethodWaitFence && input && input_size==sizeof(NativeAdrenoAbiWaitFence)) {
         const uint64_t count=__atomic_add_fetch(&connection->fences_,1,__ATOMIC_RELAXED);
-        if(count<=3 || !(count%120))K70BootLog("K70 GPU: user fence %s count %llu observed %llu\n",connection->name_,(unsigned long long)count,(unsigned long long)static_cast<const NativeAdrenoAbiWaitFence *>(input)->fence);
+        if(count<=3 || !(count%120)) {
+            K70BootLog("K70 GPU: user fence %s count %llu observed %llu\n",connection->name_,(unsigned long long)count,(unsigned long long)static_cast<const NativeAdrenoAbiWaitFence *>(input)->fence);
+            K70BootLog("K70 CACHE: %s coherent %u bytes %llu passes %llu skips publish %u acquire %u\n",
+                connection->name_,native_adreno_io_coherent,
+                (unsigned long long)__atomic_load_n(&native_adreno_cache_stats[1],__ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&native_adreno_cache_stats[3],__ATOMIC_RELAXED),
+                native_adreno_coherent_skips[2],native_adreno_coherent_skips[3]);
+        }
     }
     if(status && status!=kIOReturnTimeout) {
         const uint32_t count=__atomic_add_fetch(&connection->reportedFailures_,1,__ATOMIC_RELAXED);
@@ -659,9 +673,9 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
              * Key incomplete lines by task AND thread: discovery and scanout
              * workers can report simultaneously, as can separate processes.
              * Keys are opaque comparisons; no task/thread pointer is read. */
-            struct PhaseLine {task_t task;thread_t thread;unsigned length;char text[64];};
+            struct PhaseLine {task_t task;thread_t thread;unsigned length;char text[192];};
             static PhaseLine phases[16];
-            char completed[64]={};bool handled=false;const thread_t thread=current_thread();
+            char completed[192]={};bool handled=false;const thread_t thread=current_thread();
             IOLockLock(g.lock);
             PhaseLine *phase=nullptr;
             for(auto &p:phases)if(p.task==owningTask && p.thread==thread){phase=&p;break;}
@@ -673,7 +687,7 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
                 handled=true;
                 if(value==0x700a) {
                     memcpy(completed,phase->text,sizeof completed);
-                    memcpy(native_adreno_metal_diag.report,phase->text,sizeof phase->text);
+                    strlcpy(native_adreno_metal_diag.report,phase->text,sizeof native_adreno_metal_diag.report);
                     *phase={};
                 } else if(phase->length<sizeof phase->text-1)phase->text[phase->length++]=char(value&0xff);
             }
