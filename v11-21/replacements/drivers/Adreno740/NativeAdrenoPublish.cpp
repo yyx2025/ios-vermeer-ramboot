@@ -366,7 +366,7 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
         scanout->retain();                      /* handoff returns a borrowed descriptor */
         *memory=scanout;
         K70BootLog("K70 FRAME: scanout descriptor returned bytes %llu\n",(unsigned long long)scanout->getLength());
-        *options=kIOMapAnywhere|kIOMapInhibitCache;   /* firmware framebuffer: device memory, never cached by the CPU */
+        *options=kIOMapAnywhere|kIOMapWriteCombineCache|kIOMapUnique; /* same Normal-NC framebuffer attribute as its verified kernel view */
         return kIOReturnSuccess;
     }
     if(type==NativeAdrenoMailboxType) {

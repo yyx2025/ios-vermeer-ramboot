@@ -41,6 +41,18 @@ checks=[]
 def compile(source,output,cpp=True,native_relative=None):
     selected=flags['native'][native_relative] if native_relative in flags.get('native',{}) else flags['cpp' if cpp else 'c']
     args=[s.replace('@XNU_BUILD@',str(X)).replace('@SDK_PLATFORM@',str(X/'sdk-kernel-platform')) for s in selected]
+    directory='iokit' if native_relative is None else native_relative.split('/')[0]
+    cwd=B/directory/'DEVELOPMENT'
+    if not cwd.is_dir():
+        cwd=B
+    # Each XNU subsystem has a different generated feature header. The extra
+    # osfmk include directory is only for mach_ldebug.h; it must never redirect
+    # a BSD unit's forced feature include into the OSFMK configuration.
+    for index in range(1,len(args)):
+        if args[index-1]=='-include' and args[index]=='meta_features.h':
+            feature=cwd/'meta_features.h'
+            assert feature.is_file(),feature
+            args[index]=str(feature)
     # Source replacement headers take precedence over the archived tree.
     source_root=W/'replacements/xnu'
     inc=[W/'replacements/drivers/K70',source_root/'libkern',source_root/'iokit',source_root/'osfmk',source_root/'pexpert',
@@ -62,10 +74,13 @@ def compile(source,output,cpp=True,native_relative=None):
     # directory on the include path forwards it to the exported sys/types.h.
     extra=[]
     if source.name in ('cpu.c', 'machine_routines.c', 'start.s',
+                       'work_interval.c', 'sys_work_interval.c',
+                       'memdev.c', 'vermeer_ram_stream.c',
                        'K70UsbConsole.c', 'K70MemReport.c',
                        'QcomXnuUsbDebug.c', 'QcomUsbScreenshot.c'):
         extra=['-DMACH_KERNEL_PRIVATE=1','-I',str(W/'kernel-private-shim')]
-    if source.name in ('K70UsbConsole.c', 'K70MemReport.c') or 'replacements/qud' in str(source):
+    if source.name in ('K70UsbConsole.c', 'K70MemReport.c', 'work_interval.c',
+                       'sys_work_interval.c', 'memdev.c', 'vermeer_ram_stream.c') or 'replacements/qud' in str(source):
         # <kern/thread.h> (directly, or through <IOKit/IOLib.h> for the
         # allocator) pulls osfmk/arm/simple_lock.h, which includes the
         # generated <mach_ldebug.h>. That header only exists in the osfmk
@@ -82,15 +97,11 @@ def compile(source,output,cpp=True,native_relative=None):
         #  dwc3 iommus stream 0x40, iommu-dma-addr-pool 0x90000000).
         extra += ['-DQUD_SOC_HEADER="Sm8550.h"']
     args=[*extra,*[v for p in inc for v in ('-I',str(p))],*args,'-Wno-error','-c',str(source),'-o',str(output)]
-    directory='iokit' if native_relative is None else native_relative.split('/')[0]
-    cwd=B/directory/'DEVELOPMENT'
-    if not cwd.is_dir():
-        cwd=B
     result=subprocess.run(['xcrun','clang++' if cpp else 'clang',*args],cwd=cwd,capture_output=True,text=True)
     (OUT/(source.stem+'.log')).write_text(result.stdout+result.stderr)
     print('Compile',source.name,result.returncode,flush=True)
     if result.returncode:print(result.stderr[-8000:]);raise SystemExit(result.returncode)
-    checks.append(dict(source=str(source.relative_to(W)),source_sha256=sha(source),object=str(output),object_sha256=sha(output),bytes=output.stat().st_size,exit_code=0))
+    checks.append(dict(source=str(source.relative_to(W)),source_sha256=sha(source),object=str(output),object_sha256=sha(output),bytes=output.stat().st_size,exit_code=0,compile_cwd=str(cwd),forced_feature_headers=[args[i+1] for i,v in enumerate(args[:-1]) if v=='-include' and Path(args[i+1]).name=='meta_features.h']))
 
 # DO NOT add osfmk/arm64/sleh.c to this table.
 #
@@ -114,6 +125,10 @@ def compile(source,output,cpp=True,native_relative=None):
 # The GICR layout is therefore obtained from the device tree, not by probing.
 
 units={
+ 'osfmk/kern/work_interval.c':('osfmk/DEVELOPMENT/work_interval.o',False),
+ 'bsd/kern/sys_work_interval.c':('bsd/DEVELOPMENT/sys_work_interval.o',False),
+ 'bsd/dev/memdev.c':('bsd/DEVELOPMENT/memdev.o',False),
+ 'bsd/dev/vermeer_ram_stream.c':('bsd/DEVELOPMENT/vermeer_ram_stream.o',False),
  'iokit/Kernel/arm/SweetSurface.cpp':('iokit/DEVELOPMENT/SweetSurface.cpo',True),
  'iokit/KernelConfigTables.cpp':('iokit/DEVELOPMENT/KernelConfigTables.cpo',True),
  'libkern/c++/OSKext.cpp':('libkern/DEVELOPMENT/OSKext.cpo',True),
