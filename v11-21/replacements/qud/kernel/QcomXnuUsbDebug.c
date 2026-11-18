@@ -19,6 +19,8 @@
 #define GCC_BYTES QUD_GCC_BYTES
 #define USB_BYTES QUD_DWC3_BYTES
 #define PAGE_BYTES 4096u
+#define K70_CONSOLE_RATE_LINE_MAX 384u
+#define K70_CONSOLE_RATE_PERIOD   64u
 #define USB_GCTL 0xc110u
 #define USB_DCTL 0xc704u
 #define USB_DSTS 0xc70cu
@@ -54,6 +56,7 @@ static volatile unsigned int usb_busy;
 static volatile unsigned int usb_diag_enabled, usb_diag_checkpoint, usb_diag_resetting, usb_diag_target;
 static volatile unsigned int usb_diag_mode, usb_diag_polling;
 static uint8_t *usb_log_bytes;
+static uint8_t *k70_console_line; /* E7 rate limiter; arena-allocated, no __DATA growth */
 static struct soc_usb_buffer usb_log_buffer;
 static uint64_t usb_log_replayed, usb_log_loss_reported;
 static struct {
@@ -121,12 +124,14 @@ static int arena_alloc(void)
     if (!usb_tables) usb_tables = arena_contig(QUSB_DOMAIN_PT_BYTES);
     if (!usb_context) usb_context = arena_any(NATIVE_CONTEXT_BYTES);
     if (!usb_log_bytes) usb_log_bytes = arena_any(SOC_USB_LOG_BUFFER_BYTES);
-    if (!usb_dma || !usb_tables || !usb_context || !usb_log_bytes) return 0;
+    if (!k70_console_line) k70_console_line = arena_any(K70_CONSOLE_RATE_LINE_MAX);
+    if (!usb_dma || !usb_tables || !usb_context || !usb_log_bytes || !k70_console_line) return 0;
     /* Same starting state a zero-filled .bss array would have given us. */
     bytes_zero(usb_dma, DWC3_DMA_BYTES);
     bytes_zero(usb_tables, QUSB_DOMAIN_PT_BYTES);
     bytes_zero(usb_context, NATIVE_CONTEXT_BYTES);
     bytes_zero(usb_log_bytes, SOC_USB_LOG_BUFFER_BYTES);
+    bytes_zero(k70_console_line, K70_CONSOLE_RATE_LINE_MAX);
     usb_log_buffer.data = usb_log_bytes;
     usb_log_buffer.capacity = SOC_USB_LOG_BUFFER_BYTES;
     arenas_ready = 1;
@@ -1461,6 +1466,89 @@ int qcom_usb_debug_wait_drained(unsigned int timeout_ms)
         delay_us(0, 1000);
     }
 }
+/* -------------------------------------------------------------------------
+ * E7 rate limiter. launchd persona lookups, AMFI launch-constraint notices
+ * and the SWEET AKS selftest trace were the dominant 115200-baud traffic and
+ * change no kernel decision. PE_kputc writes one byte at a time, so reassemble
+ * a bounded line at this single console choke point. A matched class is
+ * counted; one sample plus the suppressed count is forwarded every 64 events.
+ * Every other byte keeps the original path unchanged. No allocation, waiting
+ * or MMIO here: backlog_write still owns the ring guard.
+ * ------------------------------------------------------------------------- */
+static uint32_t k70_console_len;
+static volatile uint32_t k70_console_guard;
+static uint32_t k70_console_suppressed[3]; /* 0 persona, 1 AMFI, 2 AKS */
+
+static int k70_console_contains(const char *line, uint32_t n,
+                                const char *needle, uint32_t needle_len)
+{
+    uint32_t i;
+    if (n < needle_len) return 0;
+    for (i = 0; i + needle_len <= n; ++i) {
+        uint32_t j = 0;
+        while (j < needle_len && line[i + j] == needle[j]) ++j;
+        if (j == needle_len) return 1;
+    }
+    return 0;
+}
+
+/* returns 0..2 for the measured floods, 3 for everything else */
+static uint32_t k70_console_class(const char *line, uint32_t n)
+{
+    if (k70_console_contains(line, n, "kpersona_find_by_type", 21) ||
+        k70_console_contains(line, n, "Unable to find persona", 22)) return 0;
+    if (k70_console_contains(line, n, "SWEET AKS:", 10)) return 2;
+    if (k70_console_contains(line, n, "AMFI: Launch Constraint", 23)) return 1;
+    return 3;
+}
+
+static size_t k70_console_rate_write(const void *bytes, size_t count)
+{
+    const char *const names[3] = {"persona", "AMFI", "AKS"};
+    const char *p = (const char *)bytes;
+    size_t accepted = 0, i;
+    if (!bytes || !count || !k70_console_line ||
+        native.status.phase != QCOM_USB_DEBUG_ACTIVE)
+        return backlog_write(bytes, count);
+    /* Another CPU is mid-line: pass through rather than reorder its bytes. */
+    if (__atomic_test_and_set(&k70_console_guard, __ATOMIC_ACQUIRE))
+        return backlog_write(bytes, count);
+    for (i = 0; i < count; ++i) {
+        const char c = p[i];
+        if (c != '\n') {
+            if (k70_console_len + 1u < K70_CONSOLE_RATE_LINE_MAX) {
+                k70_console_line[k70_console_len++] = c;
+            } else {
+                accepted += backlog_write(k70_console_line, k70_console_len);
+                k70_console_len = 0;
+                accepted += backlog_write(&c, 1);
+            }
+            continue;
+        }
+        {
+            const uint32_t n = k70_console_len;
+            const uint32_t cls = k70_console_class((const char *)k70_console_line, n);
+            if (cls == 3u) {
+                accepted += backlog_write(k70_console_line, n);
+                accepted += backlog_write("\n", 1);
+            } else {
+                const uint32_t seen = ++k70_console_suppressed[cls];
+                if (seen == 1u || !(seen % K70_CONSOLE_RATE_PERIOD)) {
+                    char summary[96];
+                    const int len = snprintf(summary, sizeof summary,
+                        "[K70 RATE] %s suppressed %u events\n", names[cls], seen - 1u);
+                    if (len > 0) accepted += backlog_write(summary, (size_t)len);
+                    accepted += backlog_write(k70_console_line, n);
+                    accepted += backlog_write("\n", 1);
+                }
+            }
+        }
+        k70_console_len = 0;
+    }
+    __atomic_clear(&k70_console_guard, __ATOMIC_RELEASE);
+    return accepted;
+}
+
 size_t qcom_usb_debug_write(const void *bytes, size_t count)
 {
     uint64_t flags;
@@ -1485,7 +1573,7 @@ size_t qcom_usb_debug_write(const void *bytes, size_t count)
             }
         }
     }
-    accepted = backlog_write(bytes, count);
+    accepted = k70_console_rate_write(bytes, count);
     if (native.status.phase != QCOM_USB_DEBUG_ACTIVE || !acquire(&flags)) return accepted;
     if (native.status.phase == QCOM_USB_DEBUG_ACTIVE) {
         (void)poll_owned();

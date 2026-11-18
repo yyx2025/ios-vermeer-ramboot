@@ -14,7 +14,7 @@
 class K70PanelObserve {
     IOMemoryMap *top_,*interfaces_;
     uint64_t last_;
-    uint32_t frames_[2],lines_;
+    uint32_t frames_[2],lines_,reported_;
     bool disabled_,previous_;
     bool repairConfigured_,repairEnabled_,repairAttempted_,repairOwned_;
     uint32_t repairBefore_;
@@ -75,13 +75,26 @@ public:
             K70BootLog("K70 DPU: autorefresh eligible %u before %08x after %08x applied %u\n",
                 eligible?1u:0u,before,after,repairOwned_?1u:0u);
         }
-        for(unsigned i=0;i<2;++i) {
-            const unsigned b=i*0x1000;const uint32_t frame=read(interfaces_,b+0xac);
-            K70BootLog("K70 DPU: dt_us %llu v %08x intf %u frame %u delta %u previous %u status %x timing %x count %x cmd %x te %x ar %x line %u tl %x\n",
-                (unsigned long long)(elapsed/1000),version,i+1,frame,frame-frames_[i],previous_?1u:0u,
-                read(interfaces_,b+0x26c),read(interfaces_,b),read(interfaces_,b+0xa8),read(interfaces_,b+0x84),
-                read(interfaces_,b+0x284),read(interfaces_,b+0x2b4),read(interfaces_,b+0xb0),read(interfaces_,b+0x2b0));
-            frames_[i]=frame;
+        /* E7 measured two full lines every two seconds (~736 per capture).
+         * Emit one combined line per 60 hardware frames (~1s at 60Hz) instead;
+         * sampled status fields still expose a stuck autorefresh/TE state. */
+        const unsigned b0=0,b1=0x1000;
+        const uint32_t frame0=read(interfaces_,b0+0xac),frame1=read(interfaces_,b1+0xac);
+        const uint32_t delta0=frame0-frames_[0],delta1=frame1-frames_[1];
+        const bool emit=!previous_ || frame0-reported_>=60u || frame1-reported_>=60u;
+        frames_[0]=frame0;frames_[1]=frame1;
+        if(emit) {
+            reported_=frame0;
+            K70BootLog("K70 DPU: dt_us %llu v %08x frame %u/%u delta %u/%u status %x/%x timing %x/%x count %x/%x cmd %x/%x te %x/%x ar %x/%x line %u/%u tl %x/%x\n",
+                (unsigned long long)(elapsed/1000),version,frame0,frame1,delta0,delta1,
+                read(interfaces_,b0+0x26c),read(interfaces_,b1+0x26c),
+                read(interfaces_,b0),read(interfaces_,b1),
+                read(interfaces_,b0+0xa8),read(interfaces_,b1+0xa8),
+                read(interfaces_,b0+0x84),read(interfaces_,b1+0x84),
+                read(interfaces_,b0+0x284),read(interfaces_,b1+0x284),
+                read(interfaces_,b0+0x2b4),read(interfaces_,b1+0x2b4),
+                read(interfaces_,b0+0xb0),read(interfaces_,b1+0xb0),
+                read(interfaces_,b0+0x2b0),read(interfaces_,b1+0x2b0));
         }
         ++lines_;previous_=true;last_=now;
     }
