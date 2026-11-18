@@ -68,6 +68,18 @@ jobs:
             strings -a "$r/kernel.firmware-slots" | grep -c 'present fast path' || true
             printf 'single-CPU panic strings: '
             strings -a "$r/kernel.firmware-slots" | grep -c 'only single-CPU bring-up' || true
+            for s in _vermeer_zstd_decode _vermeer_zstd_workspace_size _ZSTD_decompressDCtx _vrs_open; do
+              if xcrun nm -g -m "$r/kernel.firmware-slots" | grep -q " $s\$"; then
+                echo "present $s"
+              else
+                echo "::error::missing v2 codec symbol $s"
+              fi
+            done
+            if strings -a "$r/kernel.firmware-slots" | grep -q 'packed format %u codecs 0x%x'; then
+              echo 'present v2 packed store telemetry'
+            else
+              echo '::error::v2 packed store telemetry missing'
+            fi
           else
             echo '::error::no linked kernel'
           fi

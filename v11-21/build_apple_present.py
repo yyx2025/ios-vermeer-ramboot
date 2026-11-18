@@ -38,6 +38,43 @@ for row in native:
 
 flags=json.loads((W/'compile-flags.json').read_text())
 checks=[]
+
+# v11.41 packed v2: the strict zstd decoder is freestanding source with its
+# own libc-returning-NULL shim headers. It is compiled with the exact flags
+# audited in zstd-decoder-feasibility.json (arm64 Mach-O, no stack protector,
+# static DCtx workspace), not with XNU subsystem flags. Only memcpy/memmove/
+# memset/bzero remain external and are provided by the kernel.
+FREESTANDING_CODECS = (
+    'zstd/common/debug.c', 'zstd/common/entropy_common.c', 'zstd/common/error_private.c',
+    'zstd/common/fse_decompress.c', 'zstd/common/xxhash.c', 'zstd/common/zstd_common.c',
+    'zstd/decompress/huf_decompress.c', 'zstd/decompress/zstd_ddict.c',
+    'zstd/decompress/zstd_decompress.c', 'zstd/decompress/zstd_decompress_block.c',
+    'vermeer_zstd_decode.c',
+)
+codec_objects = []
+
+def compile_freestanding(source, output):
+    dev = W / 'replacements/xnu/bsd/dev'
+    zstd = dev / 'zstd'
+    args = ['-O2', '-ffreestanding', '-fno-stack-protector', '-fno-builtin',
+            '-ffunction-sections', '-fdata-sections',
+            '-I', str(zstd / 'freestanding'), '-I', str(zstd),
+            '-DZSTD_LEGACY_SUPPORT=0', '-DZSTD_NO_TRACE', '-DZSTD_TRACE=0',
+            '-DDEBUGLEVEL=0', '-DNDEBUG', '-DDYNAMIC_BMI2=0',
+            '-DZSTD_DISABLE_ASM', '-DXXH_NO_STDLIB', '-DXXH_VECTOR=0',
+            '--target=arm64-apple-darwin', '-mgeneral-regs-only', '-mstrict-align',
+            '-c', str(source), '-o', str(output)]
+    result = subprocess.run(['xcrun', 'clang', *args], cwd=str(W), capture_output=True, text=True)
+    (OUT / (source.stem + '.freestanding.log')).write_text(result.stdout + result.stderr)
+    print('Compile codec', source.name, result.returncode, flush=True)
+    if result.returncode:
+        print(result.stderr[-8000:]); raise SystemExit(result.returncode)
+    checks.append(dict(source=str(source.relative_to(W)), source_sha256=sha(source),
+                       object=str(output), object_sha256=sha(output),
+                       bytes=output.stat().st_size, exit_code=0,
+                       profile='freestanding-zstd-v1.5.7'))
+    return output
+
 def compile(source,output,cpp=True,native_relative=None):
     selected=flags['native'][native_relative] if native_relative in flags.get('native',{}) else flags['cpp' if cpp else 'c']
     if native_relative=='osfmk/kern/work_interval.c':
@@ -92,7 +129,7 @@ def compile(source,output,cpp=True,native_relative=None):
         # and every typedef then conflicts.
         extra += ['-I', str(B/'osfmk'/'DEVELOPMENT')]
     if native_relative in ('osfmk/kern/work_interval.c','bsd/kern/sys_work_interval.c','bsd/kern/kern_priv.c',
-                           'bsd/dev/memdev.c','bsd/dev/vermeer_ram_stream.c'):
+                           'bsd/dev/memdev.c','bsd/dev/vermeer_packed_store.c','bsd/dev/vermeer_ram_stream.c'):
         # Replacement sources retain their original quoted-header lookup.
         # Packed-RAM helpers live beside the archived bsd/dev source and are
         # not installed in the generic BSD export include directory.
@@ -137,6 +174,7 @@ units={
  'osfmk/kern/work_interval.c':('osfmk/DEVELOPMENT/work_interval.o',False),
  'bsd/kern/sys_work_interval.c':('bsd/DEVELOPMENT/sys_work_interval.o',False),
  'bsd/dev/memdev.c':('bsd/DEVELOPMENT/memdev.o',False),
+ 'bsd/dev/vermeer_packed_store.c':('bsd/DEVELOPMENT/vermeer_packed_store.o',False),
  'bsd/dev/vermeer_ram_stream.c':('bsd/DEVELOPMENT/vermeer_ram_stream.o',False),
  'iokit/Kernel/arm/SweetSurface.cpp':('iokit/DEVELOPMENT/SweetSurface.cpo',True),
  'iokit/KernelConfigTables.cpp':('iokit/DEVELOPMENT/KernelConfigTables.cpo',True),
@@ -166,6 +204,12 @@ def object_path(output):
 for relative,(output,cpp) in units.items():
     target=object_path(output)
     compile(W/'replacements/xnu'/relative,target,cpp,relative)
+# v11.41 packed v2: compile the freestanding strict-zstd decoder + wrapper.
+# The v2 vermeer_packed_store.o (rebuilt above) and vermeer_ram_stream.o call
+# vermeer_zstd_decode / vermeer_zstd_workspace_size from these objects.
+dev = W / 'replacements/xnu/bsd/dev'
+for name in FREESTANDING_CODECS:
+    codec_objects.append(compile_freestanding(dev / name, OUT / ('codec-' + Path(name).stem + '.o')))
 for name in ('K70GpuWorker','K70GpuBoot','K70GpuStartup','K70StartupService',
              'K70MetaBind','K70FrameHandoff'):
     compile(W/f'replacements/drivers/K70/{name}.cpp',O/(name+'.o'))
@@ -284,6 +328,8 @@ for attempt in range(4):
     args+=[str(p) for p in qud_objects]
     # v11.31: runtime OSMetaClass superClassLink binding (GPU + AES).
     args+=[str(O/'K70MetaBind.o')]
+    # v11.41 packed v2: strict zstd decoder (11 freestanding objects).
+    args+=[str(p) for p in codec_objects]
     result=subprocess.run(['xcrun','clang++',*args],cwd=B,capture_output=True,text=True)
     (OUT/('link-pass'+str(attempt)+'.log')).write_text(result.stdout+result.stderr)
     print('Link pass',attempt,result.returncode,flush=True)

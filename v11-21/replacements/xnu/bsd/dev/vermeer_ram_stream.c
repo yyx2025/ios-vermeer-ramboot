@@ -22,6 +22,7 @@
 #include "vermeer_ram_receive.h"
 #include "vermeer_ram_pump.h"
 #include "lzfse/lzfse_internal.h"
+#include "vermeer_zstd_decode.h"
 
 #define STREAM_BASE UINT64_C(0x940000000)
 #define STREAM_BYTES UINT64_C(0x180000000)
@@ -39,6 +40,8 @@ static struct stream_config config;
 static struct vrs_store store;
 static struct vrx_state receive;
 static lzfse_decoder_state decoder;
+/* The store mutex serializes both codecs. Never use the kernel stack for DCtx. */
+static uint64_t zstd_workspace[VERMEER_ZSTD_WORKSPACE_BYTES/sizeof(uint64_t)];
 static SHA256_CTX transfer_hash;
 static vm_offset_t area,cache,page_index;
 static _Atomic int ready,receive_failed;
@@ -99,8 +102,25 @@ static int index_sha(void *ctx,const void *data,size_t n,const uint8_t *expected
     printf("VERMEER ROOT: index SHA256 matched; %lu bytes\n",(unsigned long)n);
     return 1;
 }
-static int decode_block(void *ctx,void *dst,size_t n,const void *src,size_t stored)
+static int decode_block(void *ctx,uint32_t codec,void *dst,size_t n,const void *src,size_t stored)
 {
+    if (codec==VRS_CODEC_ZSTD) {
+        int ok=vermeer_zstd_decode(zstd_workspace,sizeof(zstd_workspace),dst,n,src,stored);
+        decode_status=ok?0:-1;decode_complete=ok;
+        /* Successful strict frames consume exactly stored and produce exactly n.
+         * Failed frames publish neither cache nor caller output in vrs_read. */
+        decode_written=ok?n:0;decode_consumed=ok?stored:0;
+        if (!ok) {
+            decode_failed=1;root_failure_stage="zstd-block-decode";
+            printf("VERMEER ROOT: ZSTD decode failed output=%lu input=%lu\n",
+                (unsigned long)n,(unsigned long)stored);
+        }
+        return ok;
+    }
+    if (codec!=VRS_CODEC_LZFSE) {
+        decode_failed=1;root_failure_stage="unsupported-block-codec";
+        return 0;
+    }
     (void)ctx;memset(&decoder,0,sizeof(decoder));
     decoder.src=decoder.src_begin=src;decoder.src_end=decoder.src+stored;
     decoder.dst=decoder.dst_begin=dst;decoder.dst_end=decoder.dst+n;
@@ -251,6 +271,12 @@ static int receive_finish(void *ctx)
         hash_mismatch(root_failure_stage,config.sha256,hash);return EIO;
     }
     printf("VERMEER ROOT: complete file SHA256 matched; root-check v3\n");
+    if (vermeer_zstd_workspace_size()>sizeof(zstd_workspace)) {
+        root_failure_stage="zstd-workspace-capacity";
+        return EIO;
+    }
+    printf("VERMEER ROOT: packed format %u codecs 0x%x; ZSTD 1.5.7 static workspace %lu\n",
+        VRS_FORMAT_VERSION,15,(unsigned long)sizeof(zstd_workspace));
     uint64_t overlay_off=(config.packed_bytes+PAGE_MASK)&~(uint64_t)PAGE_MASK;
     root_failure_stage="packed-open";
     printf("VERMEER ROOT: opening packed index; packed=%llu overlay-offset=%llx\n",
