@@ -1,4 +1,4 @@
-name: K70 v11.42 iOS16 Metal runtime
+name: K70 v11.45 mapped display repair
 on:
   workflow_dispatch:
 permissions:
@@ -15,6 +15,11 @@ jobs:
         run: xcrun --sdk iphoneos clang++ -target arm64-apple-ios16.0 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -std=c++17 -fobjc-arc -fblocks -fsyntax-only -I gpu-runtime/drivers/NativeAdreno gpu-runtime/drivers/NativeMetal/NativeAdrenoMetalPlugin.mm
       - name: Install build dependencies
         run: brew install llvm bison glslang ninja
+      - name: Verify mapped display behavior
+        run: |
+          clang++ -std=c++17 -O2 -Wall -Wextra -Werror gpu-runtime/check_mapped_display.cpp -o /tmp/mapped-display-check
+          /tmp/mapped-display-check 4096
+          /tmp/mapped-display-check 16384
       - name: Build iOS16 Metal bridge and cache-enabled Turnip
         run: python3 gpu-runtime/build_runtime.py
       - uses: actions/upload-artifact@v4

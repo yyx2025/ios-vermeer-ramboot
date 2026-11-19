@@ -76,7 +76,7 @@ void *worker(void *argument) {
     auto *w=static_cast<Work *>(argument);
     @autoreleasepool { @try {
         report(w->port,"scanout-library");id<MTLLibrary> code=library(w->device,w->bundle);
-        if(!code){report(w->port,"library-failed");delete w;return nullptr;}
+        if(!code)report(w->port,"library-failed");
         void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);
         auto *c=new Connection;c->call=io?(Call)dlsym(io,"IOConnectCallStructMethod"):nullptr;
         c->map=io?(Map)dlsym(io,"IOConnectMapMemory64"):nullptr;
@@ -99,8 +99,10 @@ void *worker(void *argument) {
         auto rawDiag=[w](uint64_t sequence,const NGPScaleSwap *swap) {
             if(!swap || !swap->count || !swap->layers[0].address)return;
             const NGPScaleLayer &f=swap->layers[0];
+            if(!k70_wire_layer_valid(f,getpagesize(),1440,3200) || f.source_bytes<8)return;
             const uint8_t *snap=(const uint8_t *)(uintptr_t)f.address;
-            const uint8_t *mid=snap+(size_t)f.stride*1200+(size_t)2240*4;
+            const size_t midY=(f.source_bytes/f.stride)/2,midX=(f.stride/4)/2;
+            const uint8_t *mid=snap+(size_t)f.stride*midY+midX*4;
             /* v11.44: a black scanout is the compositor's surface arriving empty. Sample 64 words spread over the
              * whole colour plane so "empty" is measured, not judged from three words. */
             uint32_t nonzero=0,sampled=0;
@@ -115,7 +117,8 @@ void *worker(void *argument) {
                 (unsigned long long)f.source_bytes,*(const uint32_t *)snap,
                 *(const uint32_t *)(snap+4),*(const uint32_t *)mid,nonzero,sampled);
             report(w->port,"raw-color",0,line);
-            const uint8_t *a=f.alpha_offset?(snap+f.alpha_offset+(size_t)f.alpha_stride*1200+1120):nullptr;
+            const uint8_t *a=f.alpha_bytes && midY*f.alpha_stride+midX+4<=f.alpha_bytes?
+                snap+f.alpha_offset+midY*f.alpha_stride+midX:nullptr;
             snprintf(line,sizeof line,"seq %llu aOff %llu aStride %u aMid %02x aQ %02x%02x%02x%02x",
                 (unsigned long long)sequence,(unsigned long long)f.alpha_offset,f.alpha_stride,
                 a?a[0]:0,a?a[0]:0,a?a[1]:0,a?a[2]:0,a?a[3]:0);

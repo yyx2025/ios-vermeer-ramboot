@@ -5,6 +5,8 @@
 #include <new>
 #include "../K70Display/NativeGOPWire.h"
 #include "K70FrameWireCheck.h"
+#include "K70MappedDisplay.h"
+#include <libkern/OSCacheControl.h>
 #if !__has_feature(objc_arc)
 #error K70 scanout ownership requires Objective-C ARC
 #endif
@@ -43,22 +45,16 @@ public:
         resources_->pipeline=[device newComputePipelineStateWithFunction:function error:nil];
         resources_->queue=[device newCommandQueue];
         if(!resources_->pipeline || !resources_->queue)return;
-        resources_->target=[device newBufferWithBytesNoCopy:s.base length:s.bytes options:MTLResourceStorageModeShared deallocator:nil];
+        /* GPU writes a private staging target. A failed/uncertain dispatch
+         * cannot erase the physical display's last valid picture. */
+        resources_->target=[device newBufferWithLength:s.bytes options:MTLResourceStorageModeShared];
     }
     bool ready() const {return resources_ && resources_->target && resources_->pipeline && resources_->queue && !uncertain_;}
     /* v11.44: the render server offers the surface it composites into even while nothing has been drawn, and that surface is all
      * zeros; presenting it replaces the boot logo on the scanout with black. A real black frame is opaque (alpha 0xff), so an
      * all-zero source means "nothing drawn yet": complete the swap without GPU work and leave the scanout as it was. */
     bool source_empty(const NGPScaleSwap &swap) const {
-        for(unsigned i=0;i<swap.count;++i) {
-            const uint8_t *base=(const uint8_t *)(uintptr_t)swap.layers[i].address;
-            const size_t bytes=(size_t)swap.layers[i].source_bytes;
-            if(!base || bytes<4)continue;
-            const size_t step=(bytes/64)&~size_t(3);
-            for(size_t off=0;off+4<=bytes;off+=step?step:4)
-                if(*(const uint32_t *)(base+off))return false;
-        }
-        return true;
+        return k70mapped::empty(swap);
     }
     Result present(const NGPScaleSwap &swap) {
         if(!ready())return uncertain_?kGpuUncertain:kNoResource;
@@ -70,6 +66,9 @@ public:
         }
         if(source_empty(swap))return kEmpty;
         @try {
+            void *staging=resources_->target.contents;
+            if(!staging)return kNoResource;
+            std::memcpy(staging,scanout_.base,scanout_.bytes);
             for(unsigned i=0;i<swap.count;++i) {
                 const auto &f=swap.layers[i];
                 resources_->sources[i]=[resources_->device newBufferWithBytesNoCopy:(void *)(uintptr_t)f.address length:(size_t)f.allocation_bytes
@@ -105,7 +104,11 @@ public:
             uncertain_=true;
             [resources_->pending commit];[resources_->pending waitUntilCompleted];
             if(resources_->pending.status!=MTLCommandBufferStatusCompleted)return kGpuUncertain;
-            uncertain_=false;retire();return kOk;
+            uncertain_=false;
+            std::atomic_thread_fence(std::memory_order_acquire);
+            std::memcpy(scanout_.base,staging,scanout_.stride*scanout_.height);
+            sys_dcache_flush(scanout_.base,scanout_.stride*scanout_.height);
+            retire();return kOk;
         } @catch(NSException *exception) {
             (void)exception;if(uncertain_)return kGpuUncertain;
             retire();return kNoResource;

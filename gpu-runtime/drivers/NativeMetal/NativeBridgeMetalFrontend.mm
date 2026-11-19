@@ -278,8 +278,8 @@ static void flushSurfaces(NSMutableSet *surfaces) {
  if(!surfaces.count)return;
  std::vector<std::pair<uintptr_t,size_t>> ranges;
  ranges.reserve(surfaces.count);
- for(NBTexture *texture in surfaces)if(texture.surface)
-  ranges.emplace_back(reinterpret_cast<uintptr_t>(IOSurfaceGetBaseAddress(texture.surface)),IOSurfaceGetAllocSize(texture.surface));
+ for(NBTexture *texture in surfaces)if(texture.surface && texture.buffer)
+  ranges.emplace_back(reinterpret_cast<uintptr_t>(nmb_buffer_contents(texture.buffer.handle)),nmb_buffer_length(texture.buffer.handle));
  std::sort(ranges.begin(),ranges.end());
  const auto last=std::unique(ranges.begin(),ranges.end());
  gSurfaceFlushDuplicates+=(uint64_t)(ranges.end()-last);
@@ -299,7 +299,7 @@ static NBTexture *textureOnBuffer(NBBuffer *buffer,MTLTextureDescriptor *d,NSUIn
 // A texture over a two-plane surface: the runtime reads plane 1 from the surface's own layout (two-plane RGB and YCbCr formats).
 static NBTexture *textureOnSurface(NBBuffer *buffer,MTLTextureDescriptor *d,IOSurfaceRef surface,NSUInteger plane,NSUInteger offset,NSUInteger row) {
  NmbTextureDescriptor descriptor;if(!buffer || !textureDescriptor(d,&descriptor))return nil;
- const uint64_t base=(uintptr_t)IOSurfaceGetBaseAddress(surface),chroma=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,1);
+ const uint64_t base=(uintptr_t)nmb_buffer_contents(buffer.handle),chroma=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,1);
  NmbTexture *handle=nmb_texture_new_on_surface(buffer.handle,&descriptor,offset,row,IOSurfaceGetPixelFormat(surface),plane,
   IOSurfaceGetWidth(surface),IOSurfaceGetHeight(surface),chroma>=base?chroma-base:0,IOSurfaceGetBytesPerRowOfPlane(surface,1));
  if(!handle){NBLOG(@"native-metal: texture over surface refused: %@",lastError());return nil;}
@@ -1316,18 +1316,21 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
   * was refused, so the render server never wrote a pixel into the surface the
   * handoff copies. Recover a getter that answers 0 from the plane and row
   * getters instead of dropping the frame, and report the failing check once. */
- if(!base && planeBase)base=planeBase;
+ if(!base && planes)base=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,0);
  if(!allocation && row) {
   const size_t height=planes?IOSurfaceGetHeightOfPlane(surface,plane):IOSurfaceGetHeight(surface);
   const size_t planeOffset=planeBase>base?planeBase-base:0;
+  if(!height || row>SIZE_MAX/height || planeOffset>SIZE_MAX-row*height){refuseSurface(3,surface,d,plane,0,row,base,planeBase,page);return nil;}
   allocation=planeOffset+row*height;
-  if(planes>1) {
-   const uintptr_t chroma=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,1);
-   const size_t chromaRow=IOSurfaceGetBytesPerRowOfPlane(surface,1),chromaHeight=IOSurfaceGetHeightOfPlane(surface,1);
-   if(chroma>base && chroma-base+chromaRow*chromaHeight>allocation)allocation=chroma-base+chromaRow*chromaHeight;
+  for(size_t n=0;n<planes;++n) {
+   const uintptr_t next=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,n);
+   const size_t nextRow=IOSurfaceGetBytesPerRowOfPlane(surface,n),nextHeight=IOSurfaceGetHeightOfPlane(surface,n);
+   if(next<base || !nextRow || !nextHeight || nextRow>SIZE_MAX/nextHeight ||
+      next-base>SIZE_MAX-nextRow*nextHeight){refuseSurface(3,surface,d,plane,0,row,base,next,page);return nil;}
+   allocation=std::max(allocation,size_t(next-base+nextRow*nextHeight));
   }
  }
- if(!page || (page&(page-1)) || !base || (base&(page-1)) || !allocation || allocation>SIZE_MAX-(page-1)){
+ if(!page || (page&(page-1)) || !base || !allocation || allocation>(256u<<20) || allocation>SIZE_MAX-(page-1)){
   refuseSurface(2,surface,d,plane,base,row,base,planeBase,page);return nil;
  }
  uintptr_t start=planeBase;
@@ -1336,9 +1339,14 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
   start=base;   /* plane 0's getter is unusable; its texels start with the surface */
  }
  if(!row){refuseSurface(3,surface,d,plane,start-base,row,base,start,page);return nil;}
- const size_t bytes=(allocation+page-1)&~(page-1);
- NBBuffer *buffer=surfaceBuffer(surface,(void *)base,bytes);if(!buffer){refuseSurface(4,surface,d,plane,start-base,row,base,start,page);return nil;}
- NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-base,row):textureOnBuffer(buffer,d,start-base,row,true);
+ /* Import complete mapped pages, while retaining the plane's original byte
+  * offset. IOSurfaceOffset can make a valid surface base non-page-aligned. */
+ const uintptr_t mappedBase=base&~uintptr_t(page-1);
+ const size_t prefix=base-mappedBase;
+ if(allocation>SIZE_MAX-prefix-(page-1)){refuseSurface(2,surface,d,plane,0,row,base,start,page);return nil;}
+ const size_t bytes=(prefix+allocation+page-1)&~(page-1);
+ NBBuffer *buffer=surfaceBuffer(surface,(void *)mappedBase,bytes);if(!buffer){refuseSurface(4,surface,d,plane,start-base,row,base,start,page);return nil;}
+ NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-mappedBase,row):textureOnBuffer(buffer,d,start-mappedBase,row,true);
  if(!texture){refuseSurface(5,surface,d,plane,start-base,row,base,start,page);return nil;}
  if(gSurfaceTextures.load()<4)
   NBLOG(@"native-metal: surface import ok id %u fmt %08x planes %u plane %u pfmt %u base %llx alloc %llu row %llu",
