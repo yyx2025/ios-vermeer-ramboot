@@ -9,7 +9,7 @@
 #error K70 scanout ownership requires Objective-C ARC
 #endif
 namespace gpupresent {
-enum Result {kOk,kBadFrame,kNoResource,kGpuUncertain};
+enum Result {kOk,kBadFrame,kNoResource,kGpuUncertain,kEmpty};
 struct Scanout {void *base;size_t bytes,stride;uint32_t width,height;};
 class Presenter {
     struct Resources {
@@ -46,6 +46,20 @@ public:
         resources_->target=[device newBufferWithBytesNoCopy:s.base length:s.bytes options:MTLResourceStorageModeShared deallocator:nil];
     }
     bool ready() const {return resources_ && resources_->target && resources_->pipeline && resources_->queue && !uncertain_;}
+    /* v11.44: the render server offers the surface it composites into even while nothing has been drawn, and that surface is all
+     * zeros; presenting it replaces the boot logo on the scanout with black. A real black frame is opaque (alpha 0xff), so an
+     * all-zero source means "nothing drawn yet": complete the swap without GPU work and leave the scanout as it was. */
+    bool source_empty(const NGPScaleSwap &swap) const {
+        for(unsigned i=0;i<swap.count;++i) {
+            const uint8_t *base=(const uint8_t *)(uintptr_t)swap.layers[i].address;
+            const size_t bytes=(size_t)swap.layers[i].source_bytes;
+            if(!base || bytes<4)continue;
+            const size_t step=(bytes/64)&~size_t(3);
+            for(size_t off=0;off+4<=bytes;off+=step?step:4)
+                if(*(const uint32_t *)(base+off))return false;
+        }
+        return true;
+    }
     Result present(const NGPScaleSwap &swap) {
         if(!ready())return uncertain_?kGpuUncertain:kNoResource;
         if(!swap.sequence || swap.version!=NGP_VERSION || !swap.count || swap.count>NGP_MAX_LAYERS)return kBadFrame;
@@ -54,6 +68,7 @@ public:
             const auto &f=swap.layers[i];
             if(!k70_wire_layer_valid(f,page,scanout_.width,scanout_.height))return kBadFrame;
         }
+        if(source_empty(swap))return kEmpty;
         @try {
             for(unsigned i=0;i<swap.count;++i) {
                 const auto &f=swap.layers[i];

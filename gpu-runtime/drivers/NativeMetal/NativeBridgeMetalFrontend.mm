@@ -39,6 +39,10 @@ static std::atomic<uint64_t> gCommits,gCommitFailures,gPipelines,gProblems,gComp
 // What the render server actually asks of the GPU (int-141: 59 commits in 200 s, and a desktop that behaves like CPU compositing): render passes,
 // draws, the pixels of their first colour attachment, compute dispatches, blits and the largest pass (pixels).
 static std::atomic<uint64_t> gPasses,gDraws,gPassPixels,gDispatches,gBlits,gBiggestPass,gFullScreenPasses;
+// v11.44 black-screen tracing: the display shows only what some process drew into the surface the kernel scans out. These print, per process,
+// the passes, draws, dispatches, blits and pipelines of the first frames, so the serial log separates "nothing drawn" from "drawn elsewhere".
+static std::atomic<unsigned> gTracePasses,gTraceDraws,gTraceDispatches,gTracePipelines,gTraceBlits;
+static bool traceWithin(std::atomic<unsigned> &seen,unsigned limit) {return seen.fetch_add(1)<limit;}
 // Where the time goes on the CPU side of the bridge: pipeline, library and function creation (count, total and slowest, in microseconds), and the
 // last commits with what each held and how long the GPU took (commit to completion).
 static uint64_t nowUs() {return clock_gettime_nsec_np(CLOCK_UPTIME_RAW)/1000;}
@@ -509,6 +513,8 @@ static void notified(void *context,uint64_t value) {
 @public
  EncodedWork encodedWork;   // the command buffer's single encoder thread, not global counter deltas
  uint64_t createdUs;
+ // v11.44: the last render pass created on this command buffer, for the per-commit trace.
+ uintptr_t lastTargetBase;uint32_t lastTargetWidth,lastTargetHeight,lastTargetFormat,lastTargetSurface;
 }
 @property(nonatomic) NmbCommandBuffer *handle;
 @property(nonatomic,strong) NBQueue *queue;
@@ -613,6 +619,10 @@ static void waitForResource(id resource) {
 }
 - (void)dispatch:(MTLSize)size group:(MTLSize)group threads:(bool)threads {
  gDispatches++;self.commandBuffer->encodedWork.dispatches++;
+ if(traceWithin(gTraceDispatches,16))
+  NSLog(@"native-metal: trace dispatch %llu %lux%lux%lu threads %lux%lux%lu %s",(unsigned long long)gDispatches.load(),
+        (unsigned long)size.width,(unsigned long)size.height,(unsigned long)size.depth,
+        (unsigned long)group.width,(unsigned long)group.height,(unsigned long)group.depth,threads?"threads":"groups");
  const uint64_t s[3]={size.width,size.height,size.depth},g[3]={group.width,group.height,group.depth};
  [self check:nmb_compute_dispatch(self.handle,s,g,threads) what:"dispatch"];
 }
@@ -695,6 +705,8 @@ static void waitForResource(id resource) {
 }
 - (void)drawPrimitives:(MTLPrimitiveType)t vertexStart:(NSUInteger)s vertexCount:(NSUInteger)n instanceCount:(NSUInteger)i baseInstance:(NSUInteger)b {
  gDraws++;self.commandBuffer->encodedWork.draws++;
+ if(traceWithin(gTraceDraws,24))
+  NSLog(@"native-metal: trace draw %llu prim %u start %lu count %lu inst %lu",(unsigned long long)gDraws.load(),(unsigned)t,(unsigned long)s,(unsigned long)n,(unsigned long)i);
  [self check:nmb_render_draw(self.handle,t,(uint32_t)s,(uint32_t)n,(uint32_t)i,(uint32_t)b) what:"drawPrimitives"];
 }
 - (void)drawPrimitives:(MTLPrimitiveType)t vertexStart:(NSUInteger)s vertexCount:(NSUInteger)n instanceCount:(NSUInteger)i {
@@ -708,6 +720,8 @@ static void waitForResource(id resource) {
  if(![(id)b isKindOfClass:[NBBuffer class]]){[self.commandBuffer refuse:@"foreign index buffer"];return;}
  [self.commandBuffer.resourceOwners addObject:b];
  gDraws++;self.commandBuffer->encodedWork.draws++;
+ if(traceWithin(gTraceDraws,24))
+  NSLog(@"native-metal: trace draw-indexed %llu prim %u count %lu inst %lu",(unsigned long long)gDraws.load(),(unsigned)t,(unsigned long)n,(unsigned long)i);
  [self check:nmb_render_draw_indexed(self.handle,t,(uint32_t)n,k,[(NBBuffer *)b handle],o,(uint32_t)i,(int32_t)v,(uint32_t)bi) what:"drawIndexedPrimitives"];
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)t indexCount:(NSUInteger)n indexType:(MTLIndexType)k indexBuffer:(id<MTLBuffer>)b indexBufferOffset:(NSUInteger)o
@@ -753,6 +767,16 @@ static void waitForResource(id resource) {
 - (void)copyFromTexture:(id<MTLTexture>)s sourceSlice:(NSUInteger)ss sourceLevel:(NSUInteger)sl sourceOrigin:(MTLOrigin)so sourceSize:(MTLSize)z
               toTexture:(id<MTLTexture>)d destinationSlice:(NSUInteger)ds destinationLevel:(NSUInteger)dl destinationOrigin:(MTLOrigin)dO {
  if(![self textures:NB_OBJECTS(s,d) count:2])return;
+ if(traceWithin(gTraceBlits,8)) {
+  NBTexture *source=(NBTexture *)s,*destination=(NBTexture *)d;
+  NSLog(@"native-metal: trace blit %llu %lux%u fmt %u surface %u base %llx -> %lux%u fmt %u surface %u base %llx",(unsigned long long)gBlits.load(),
+        (unsigned)source.width,(unsigned)source.height,(unsigned)source.descriptor.format,
+        source.surface?(unsigned)IOSurfaceGetID(source.surface):0,
+        (unsigned long long)(source.buffer?(uintptr_t)nmb_buffer_contents(source.buffer.handle)+source.offset:0),
+        (unsigned)destination.width,(unsigned)destination.height,(unsigned)destination.descriptor.format,
+        destination.surface?(unsigned)IOSurfaceGetID(destination.surface):0,
+        (unsigned long long)(destination.buffer?(uintptr_t)nmb_buffer_contents(destination.buffer.handle)+destination.offset:0));
+ }
  const uint64_t a[3]={so.x,so.y,so.z},size[3]={z.width,z.height,z.depth},b[3]={dO.x,dO.y,dO.z};
  [self check:nmb_blit_copy_texture(self.handle,[(NBTexture *)s handle],ss,sl,a,size,[(NBTexture *)d handle],ds,dl,b) what:"copyFromTexture:toTexture:"];
 }
@@ -849,6 +873,17 @@ static void scheduled(void *context);
    gPasses++;gPassPixels+=pixels;encodedWork.passes++;encodedWork.pixels+=pixels;
    uint64_t seen=gBiggestPass.load();while(pixels>seen && !gBiggestPass.compare_exchange_weak(seen,pixels)){}
    if(pixels>=2000000)gFullScreenPasses++;
+   lastTargetWidth=(uint32_t)first.width;lastTargetHeight=(uint32_t)first.height;lastTargetFormat=(uint32_t)first.pixelFormat;
+   lastTargetBase=0;lastTargetSurface=0;
+   if([(id)first isKindOfClass:[NBTexture class]]) {
+    NBTexture *texture=(NBTexture *)first;
+    if(texture.buffer)lastTargetBase=(uintptr_t)nmb_buffer_contents(texture.buffer.handle)+texture.offset;
+    if(texture.surface)lastTargetSurface=(uint32_t)IOSurfaceGetID(texture.surface);
+   }
+   if(traceWithin(gTracePasses,16))
+    NSLog(@"native-metal: trace pass %llu tex %ux%u fmt %u rt %ux%u surface %u base %llx load %lu store %lu",(unsigned long long)gPasses.load(),
+          lastTargetWidth,lastTargetHeight,lastTargetFormat,(unsigned)d.renderTargetWidth,(unsigned)d.renderTargetHeight,lastTargetSurface,
+          (unsigned long long)lastTargetBase,(unsigned long)d.colorAttachments[0].loadAction,(unsigned long)d.colorAttachments[0].storeAction);
   }
  }
  auto attachment=[&](MTLRenderPassAttachmentDescriptor *a,NmbPassAttachment &out)->bool {
@@ -939,6 +974,11 @@ static void scheduled(void *context);
   const uint32_t index=(uint32_t)(gCommits.fetch_add(1)+1);self.commitIndex=index;
   CommitRecord &r=gCommitRing[index%32];
   r={};r.index=index;r.committedUs=self.committedUs;r.ageUs=self.committedUs-createdUs;r.work=encodedWork;
+  // v11.44: one line per early frame names what this command buffer held, which target it rendered and whether that target is a surface.
+  if(index<=20 || index%300==0)
+   NSLog(@"native-metal: trace commit %u pass %u draw %u disp %u blit %u px %llu target %ux%u fmt %u surface %u base %llx",
+         index,encodedWork.passes,encodedWork.draws,encodedWork.dispatches,encodedWork.blits,(unsigned long long)encodedWork.pixels,
+         lastTargetWidth,lastTargetHeight,lastTargetFormat,lastTargetSurface,(unsigned long long)lastTargetBase);
  }
  dispatch_group_enter(_handlers);
  dispatch_group_enter(_schedulingHandlers);
@@ -1301,8 +1341,8 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
  NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-base,row):textureOnBuffer(buffer,d,start-base,row,true);
  if(!texture){refuseSurface(5,surface,d,plane,start-base,row,base,start,page);return nil;}
  if(gSurfaceTextures.load()<4)
-  NBLOG(@"native-metal: surface import ok fmt %08x planes %u plane %u pfmt %u base %llx alloc %llu row %llu",
-        (uint32_t)IOSurfaceGetPixelFormat(surface),(uint32_t)planes,(uint32_t)plane,(uint32_t)d.pixelFormat,
+  NBLOG(@"native-metal: surface import ok id %u fmt %08x planes %u plane %u pfmt %u base %llx alloc %llu row %llu",
+        (unsigned)IOSurfaceGetID(surface),(uint32_t)IOSurfaceGetPixelFormat(surface),(uint32_t)planes,(uint32_t)plane,(uint32_t)d.pixelFormat,
         (unsigned long long)base,(unsigned long long)allocation,(unsigned long long)row);
  gSurfaceTextures++;texture.surface=(IOSurfaceRef)CFRetain(surface);return (id<MTLTexture>)texture;
 }
@@ -1369,7 +1409,14 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
  const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
  const uint64_t pipelineBegan=nowUs();
  NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
- if(!handle)return failWith<id<MTLRenderPipelineState>>(error,@"render pipeline",nil);
+ if(!handle) {
+  if(traceWithin(gTracePipelines,12))
+   NSLog(@"native-metal: trace pipeline fail v %@ f %@: %@",((NBFunction *)d.vertexFunction).name,((NBFunction *)d.fragmentFunction).name,lastError());
+  return failWith<id<MTLRenderPipelineState>>(error,@"render pipeline",nil);
+ }
+ if(traceWithin(gTracePipelines,12))
+  NSLog(@"native-metal: trace pipeline %llu ok v %@ f %@",(unsigned long long)gPipelines.load(),
+        ((NBFunction *)d.vertexFunction).name,((NBFunction *)d.fragmentFunction).name);
  NBRenderPipeline *state=[NBRenderPipeline new];state.handle=handle;gPipelines++;if(error)*error=nil;return (id<MTLRenderPipelineState>)state;
 }
 // The asynchronous forms make the pipeline on the caller's thread and call the handler before returning, as the library's

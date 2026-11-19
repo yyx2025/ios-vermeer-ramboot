@@ -101,11 +101,19 @@ void *worker(void *argument) {
             const NGPScaleLayer &f=swap->layers[0];
             const uint8_t *snap=(const uint8_t *)(uintptr_t)f.address;
             const uint8_t *mid=snap+(size_t)f.stride*1200+(size_t)2240*4;
-            char line[160]{};
-            snprintf(line,sizeof line,"seq %llu a %llx stride %u src %llu w0 %08x w1 %08x mid %08x",
+            /* v11.44: a black scanout is the compositor's surface arriving empty. Sample 64 words spread over the
+             * whole colour plane so "empty" is measured, not judged from three words. */
+            uint32_t nonzero=0,sampled=0;
+            const size_t bytes=(size_t)f.source_bytes;
+            if(bytes>=4) {
+                const size_t step=bytes/64&~3ull;
+                for(size_t off=0;off+4<=bytes && sampled<64;off+=step?step:4) {if(*(const uint32_t *)(snap+off))++nonzero;++sampled;}
+            }
+            char line[192]{};
+            snprintf(line,sizeof line,"seq %llu a %llx stride %u src %llu w0 %08x w1 %08x mid %08x nz %u/%u",
                 (unsigned long long)sequence,(unsigned long long)f.address,f.stride,
                 (unsigned long long)f.source_bytes,*(const uint32_t *)snap,
-                *(const uint32_t *)(snap+4),*(const uint32_t *)mid);
+                *(const uint32_t *)(snap+4),*(const uint32_t *)mid,nonzero,sampled);
             report(w->port,"raw-color",0,line);
             const uint8_t *a=f.alpha_offset?(snap+f.alpha_offset+(size_t)f.alpha_stride*1200+1120):nullptr;
             snprintf(line,sizeof line,"seq %llu aOff %llu aStride %u aMid %02x aQ %02x%02x%02x%02x",

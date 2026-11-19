@@ -17,7 +17,7 @@ public:
      * must show these bytes if the handoff copy is correct; all-zero here with
      * continuing CoreAnimation swaps means the source surface is empty. */
     std::function<void(uint64_t,const NGPScaleSwap *)> diag;
-    uint64_t diag_frames_=0;
+    uint64_t diag_frames_=0,empty_frames_=0;
     bool open(id<MTLDevice> device,id<MTLLibrary> library,const Transport &t) {
         if(!t.call || !t.mapScanout || !device || !library)return false;
         transport_=t;NGPMode mode{};
@@ -45,10 +45,17 @@ public:
         }
         gpupresent::Result result;
         @autoreleasepool {result=presenter_->present(swap);}
-        const NGPComplete done{swap.sequence,result==gpupresent::kOk?0u:0xe00002bcu,
+        /* An empty source is completed as a successful swap with no GPU work: the scanout keeps the boot logo instead of
+         * being cleared to black, and the next swap with real content presents normally. */
+        const bool presented=result==gpupresent::kOk||result==gpupresent::kEmpty;
+        if(result==gpupresent::kEmpty && empty_frames_<8) {
+            ++empty_frames_;
+            NSLog(@"native-metal: empty source %llu kept on scanout",(unsigned long long)swap.sequence);
+        }
+        const NGPComplete done{swap.sequence,presented?0u:0xe00002bcu,
             result==gpupresent::kGpuUncertain?0u:NGP_QUIESCENT};
         const int completed=transport_.call(transport_.context,NGP_METHOD_COMPLETE_SWAP,&done,sizeof done,nullptr,0);
-        return !completed && result==gpupresent::kOk;
+        return !completed && presented;
     }
 };
 }
