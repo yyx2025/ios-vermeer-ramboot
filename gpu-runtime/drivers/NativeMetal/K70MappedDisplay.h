@@ -72,20 +72,30 @@ class Driver {
     Scanout scanout_{};
     uint64_t page_;
     std::unique_ptr<uint32_t[]> staging_;
+    void publish() {
+        std::atomic_thread_fence(std::memory_order_release);
+        std::memcpy(scanout_.base,staging_.get(),scanout_.stride*scanout_.height);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
 public:
     Driver(const Scanout &s,uint64_t page):scanout_(s),page_(page) {
-        if(s.bytes && s.bytes<=256u<<20)staging_.reset(new(std::nothrow) uint32_t[s.bytes/4]);
+        if(page && !(page&(page-1)) && s.base && !(uintptr_t(s.base)&(page-1)) &&
+           s.bytes && !(s.bytes&(page-1)) && s.bytes<=256u<<20 && s.width==1440 &&
+           s.height==3200 && s.stride==5760 && uint64_t(s.stride)*s.height<=s.bytes) {
+            staging_.reset(new(std::nothrow) uint32_t[s.bytes/4]);
+            if(staging_)std::memcpy(staging_.get(),s.base,s.bytes);
+        }
     }
     bool ready() const {return staging_!=nullptr;}
     Result present(const NGPScaleSwap &swap) {
         if(!valid(swap,scanout_,page_))return kInvalid;
         if(!ready())return kNoMemory;
-        if(empty(swap))return kEmpty;
-        std::memcpy(staging_.get(),scanout_.base,scanout_.bytes);
+        /* The kernel's first CPU present clears the panel while muting the
+         * console. Restore our captured baseline if that first surface is
+         * empty; later empty offers restore the last completed real frame. */
+        if(empty(swap)){publish();return kEmpty;}
         render(swap,staging_.get(),scanout_.stride);
-        std::atomic_thread_fence(std::memory_order_release);
-        std::memcpy(scanout_.base,staging_.get(),scanout_.stride*scanout_.height);
-        std::atomic_thread_fence(std::memory_order_seq_cst);
+        publish();
         return kPresented;
     }
 };

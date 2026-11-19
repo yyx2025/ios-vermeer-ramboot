@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
+#include <algorithm>
 #ifdef _WIN32
 #include <malloc.h>
 #endif
@@ -33,6 +34,8 @@ int main(int argc,char **argv) {
     f.source_bytes=sourceBytes;f.stride=4500;f.format=NGP_SOURCE_BGRA;
     f.lw=1125;f.lh=2436;f.pw=1440;f.ph=3200;f.x1=1440;f.y1=3200;
     k70mapped::Driver driver({fb,fbBytes,5760,1440,3200},page);
+    // The legacy kernel first-present clear occurs after the baseline capture.
+    std::fill(fb,fb+fbBytes/4,0u);
     assert(driver.ready() && driver.present(swap)==k70mapped::kEmpty);
     assert(fb[0]==0xff123456u && fb[1440*3200-1]==0xff123456u);
     // A lone nonzero pixel outside all previous 64 sample positions is real content.

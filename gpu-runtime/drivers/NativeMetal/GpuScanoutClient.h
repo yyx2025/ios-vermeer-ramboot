@@ -63,7 +63,7 @@ public:
         @autoreleasepool {result=useMapped_?gpupresent::kNoResource:presenter_->present(swap);}
         /* Only a refusal before any GPU commit may use CPU fallback. Uncertain
          * DMA keeps the kernel lease blocked and cannot race mapped writes. */
-        if(useMapped_ || result==gpupresent::kNoResource) {
+        if(useMapped_ || result==gpupresent::kNoResource || result==gpupresent::kEmpty) {
             useMapped_=true;
             const auto cpu=mapped_->present(swap);
             if(cpu==k70mapped::kPresented) {
@@ -72,7 +72,10 @@ public:
                 if(mapped_frames_<=8 || mapped_frames_%120==0)
                     NSLog(@"native-metal: mapped completed sequence %llu",(unsigned long long)swap.sequence);
                 result=gpupresent::kOk;
-            } else if(cpu==k70mapped::kEmpty)result=gpupresent::kEmpty;
+            } else if(cpu==k70mapped::kEmpty) {
+                sys_dcache_flush((void *)(uintptr_t)address_,bytes_);
+                result=gpupresent::kEmpty;
+            }
             else result=cpu==k70mapped::kInvalid?gpupresent::kBadFrame:gpupresent::kNoResource;
         }
         /* An empty source is completed as a successful swap with no GPU work: the scanout keeps the boot logo instead of

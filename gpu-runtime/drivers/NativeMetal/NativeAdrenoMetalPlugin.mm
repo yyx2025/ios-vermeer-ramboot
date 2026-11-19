@@ -53,7 +53,8 @@ id<MTLLibrary> library(id<MTLDevice> device,NSBundle *bundle) {
     dispatch_data_t code=dispatch_data_create(data.bytes,data.length,dispatch_get_global_queue(QOS_CLASS_DEFAULT,0),^{(void)data;});
     return [device newLibraryWithData:code error:nil];
 }
-struct Work {id<MTLDevice> device;NSBundle *bundle;unsigned port;Ref release;~Work(){if(release)release(port);}};
+struct Work {id<MTLDevice> device;NSBundle *bundle;unsigned port;Ref release;dispatch_semaphore_t prepared;
+    ~Work(){if(prepared)dispatch_semaphore_signal(prepared);if(release)release(port);}};
 void frontendReport(unsigned port) {
     char line[512]={};native_bridge_metal_status(line,sizeof line);
     report(port,"front-counts",0,line);
@@ -75,8 +76,11 @@ void frontendReport(unsigned port) {
 void *worker(void *argument) {
     auto *w=static_cast<Work *>(argument);
     @autoreleasepool { @try {
-        report(w->port,"scanout-library");id<MTLLibrary> code=library(w->device,w->bundle);
-        if(!code)report(w->port,"library-failed");
+        const char *backend=getenv("K70_DISPLAY_BACKEND");
+        const bool mappedDefault=!backend || !strcmp(backend,"mapped");
+        report(w->port,mappedDefault?"mapped-start":"scanout-library");
+        id<MTLLibrary> code=mappedDefault?nil:library(w->device,w->bundle);
+        if(!mappedDefault && !code)report(w->port,"library-failed");
         void *io=dlopen("/System/Library/Frameworks/IOKit.framework/IOKit",RTLD_NOW|RTLD_LOCAL);
         auto *c=new Connection;c->call=io?(Call)dlsym(io,"IOConnectCallStructMethod"):nullptr;
         c->map=io?(Map)dlsym(io,"IOConnectMapMemory64"):nullptr;
@@ -139,6 +143,9 @@ void *worker(void *argument) {
         }
         if(!opened){report(w->port,"presenter-failed",(int)K70_PRESENTER_TRIES);delete w;return nullptr;}
         report(w->port,"presenter-ready");
+        /* Capture the old panel and prepare the lease before CoreAnimation
+         * receives its device and can cause the kernel's first CPU clear. */
+        dispatch_semaphore_signal(w->prepared);
         uint64_t frames=0;unsigned samples=0;
         while(client->serveOne()) {
             ++frames;
@@ -181,10 +188,16 @@ id open(unsigned port) {
     if(!strcmp(getprogname(),"backboardd")) {
         auto retain=(Ref)dlsym(io,"IOObjectRetain");auto release=(Ref)dlsym(io,"IOObjectRelease");
         if(retain && release && !retain(port)) {
-            auto *w=new Work{(id<MTLDevice>)device,bundle,port,release};pthread_attr_t attributes;pthread_attr_init(&attributes);
+            dispatch_semaphore_t prepared=dispatch_semaphore_create(0);
+            auto *w=new Work{(id<MTLDevice>)device,bundle,port,release,prepared};pthread_attr_t attributes;pthread_attr_init(&attributes);
             pthread_attr_setstacksize(&attributes,8u<<20);pthread_t thread;
             const int status=pthread_create(&thread,&attributes,worker,w);pthread_attr_destroy(&attributes);
-            if(status){report(port,"worker-failed",status);delete w;}else pthread_detach(thread);
+            if(status){report(port,"worker-failed",status);delete w;}
+            else {
+                pthread_detach(thread);
+                const long waited=dispatch_semaphore_wait(prepared,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC));
+                if(waited)report(port,"mapped-start-timeout");
+            }
         } else report(port,"port-retain-fail");
     }
     report(port,"device-returned");return device;
