@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <mach/mach.h>
+#include <time.h>
 #include <cstring>
 #include <cstdio>
 #include "NativeBridgeMetalFrontend.h"
@@ -17,6 +18,8 @@
 - (id)initWithAcceleratorPort:(unsigned)port;
 @end
 namespace {
+/* Bounded presenter setup retry for the fast-boot device-lost window. */
+enum {K70_PRESENTER_TRIES=12,K70_PRESENTER_BACKOFF_S=1};
 using Call=int (*)(unsigned,uint32_t,const void *,size_t,void *,size_t *);
 using Map=int (*)(unsigned,uint32_t,unsigned,uint64_t *,uint64_t *,uint32_t);
 using Open=int (*)(unsigned,unsigned,uint32_t,unsigned *);
@@ -80,10 +83,29 @@ void *worker(void *argument) {
         auto open=io?(Open)dlsym(io,"IOServiceOpen"):nullptr;
         const int status=open&&c->call&&c->map?open(w->port,mach_task_self(),0x4148,&c->connection):-1;
         if(status){report(w->port,"handoff-failed",status);delete c;delete w;return nullptr;}
-        auto *client=new gpuscanout::Client;report(w->port,"presenter-create");
-        if(!client->open(w->device,code,{c,call,map})) {
-            report(w->port,"presenter-failed");delete w;return nullptr;
+        /* The fast (denoised) boot reaches presenter setup far earlier than
+         * v11.41 did (t~977s vs t~8235s). At that point the GPU userland can
+         * still be inside a transient device-lost window, so Presenter::ready()
+         * fails even though the MODE/map handshake succeeded and other clients
+         * later report device-ready. v11.41 only worked because it arrived here
+         * hours later. Retry with bounded backoff: each attempt builds a fresh
+         * Client/Presenter (new pipeline/queue/buffer) against the same device,
+         * giving the userland time to recover instead of killing the worker on
+         * the first refusal. */
+        gpuscanout::Client *client=nullptr;bool opened=false;
+        for(unsigned attempt=1;attempt<=K70_PRESENTER_TRIES && !opened;++attempt) {
+            client=new gpuscanout::Client;
+            if(attempt==1)report(w->port,"presenter-create");
+            opened=client->open(w->device,code,{c,call,map});
+            if(!opened) {
+                report(w->port,"presenter-retry",(int)attempt,nmb_last_error());
+                delete client;client=nullptr;
+                if(attempt<K70_PRESENTER_TRIES) {
+                    struct timespec pause{K70_PRESENTER_BACKOFF_S,0};nanosleep(&pause,nullptr);
+                }
+            }
         }
+        if(!opened){report(w->port,"presenter-failed",(int)K70_PRESENTER_TRIES);delete w;return nullptr;}
         report(w->port,"presenter-ready");
         uint64_t frames=0;unsigned samples=0;
         while(client->serveOne()) {
