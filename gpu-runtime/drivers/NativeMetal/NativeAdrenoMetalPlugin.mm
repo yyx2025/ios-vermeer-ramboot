@@ -93,8 +93,29 @@ void *worker(void *argument) {
          * giving the userland time to recover instead of killing the worker on
          * the first refusal. */
         gpuscanout::Client *client=nullptr;bool opened=false;
+        /* v11.43 raw-source probe: read the kernel snapshot the shader will
+         * consume, before present(). report() is the same USB marker stream
+         * that already carries presenter/front telemetry. */
+        auto rawDiag=[w](uint64_t sequence,const NGPScaleSwap *swap) {
+            if(!swap || !swap->count || !swap->layers[0].address)return;
+            const NGPScaleLayer &f=swap->layers[0];
+            const uint8_t *snap=(const uint8_t *)(uintptr_t)f.address;
+            const uint8_t *mid=snap+(size_t)f.stride*1200+(size_t)2240*4;
+            char line[160]{};
+            snprintf(line,sizeof line,"seq %llu a %llx stride %u src %llu w0 %08x w1 %08x mid %08x",
+                (unsigned long long)sequence,(unsigned long long)f.address,f.stride,
+                (unsigned long long)f.source_bytes,*(const uint32_t *)snap,
+                *(const uint32_t *)(snap+4),*(const uint32_t *)mid);
+            report(w->port,"raw-color",0,line);
+            const uint8_t *a=f.alpha_offset?(snap+f.alpha_offset+(size_t)f.alpha_stride*1200+1120):nullptr;
+            snprintf(line,sizeof line,"seq %llu aOff %llu aStride %u aMid %02x aQ %02x%02x%02x%02x",
+                (unsigned long long)sequence,(unsigned long long)f.alpha_offset,f.alpha_stride,
+                a?a[0]:0,a?a[0]:0,a?a[1]:0,a?a[2]:0,a?a[3]:0);
+            report(w->port,"raw-alpha",0,line);
+        };
         for(unsigned attempt=1;attempt<=K70_PRESENTER_TRIES && !opened;++attempt) {
             client=new gpuscanout::Client;
+            client->diag=rawDiag;
             if(attempt==1)report(w->port,"presenter-create");
             opened=client->open(w->device,code,{c,call,map});
             if(!opened) {

@@ -11,6 +11,12 @@ class Client {
     Transport transport_{};
     gpupresent::Presenter *presenter_=nullptr;
 public:
+    /* v11.43 raw-source probe. Called once per sampled frame, BEFORE present(),
+     * with the kernel snapshot the shader is about to read. The producer dump
+     * must show these bytes if the handoff copy is correct; all-zero here with
+     * continuing CoreAnimation swaps means the source surface is empty. */
+    void (*diag)(uint64_t,const NGPScaleSwap *)=nullptr;
+    uint64_t diag_frames_=0;
     bool open(id<MTLDevice> device,id<MTLLibrary> library,const Transport &t) {
         if(!t.call || !t.mapScanout || !device || !library)return false;
         transport_=t;NGPMode mode{};
@@ -33,6 +39,9 @@ public:
         int status=transport_.call(transport_.context,NGP_METHOD_WAIT_SWAP,&wait,sizeof wait,&swap,sizeof swap);
         if((uint32_t)status==0xe00002d6u)return true;
         if(status)return false;
+        if(diag && swap.sequence && swap.count && (diag_frames_<8 || diag_frames_%600==0)) {
+            ++diag_frames_;diag(swap.sequence,&swap);
+        }
         gpupresent::Result result;
         @autoreleasepool {result=presenter_->present(swap);}
         const NGPComplete done{swap.sequence,result==gpupresent::kOk?0u:0xe00002bcu,
