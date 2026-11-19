@@ -69,13 +69,25 @@ static uint32_t gFormats[8];static unsigned gFormatCount;static std::atomic<uint
 static std::atomic<uint64_t> gSurfaceTextures,gSurfaceRefusals,gSurfacePlanar;
 // The last refused surface texture: the check that refused it (1 plane, 2 base, 3 plane range, 4 import, 5 texture), the surface's format,
 // planes, requested plane, plane offset, plane row bytes and allocation, and the descriptor's size and pixel format.
-struct SurfaceRefusal {uint32_t step,format,planes,plane,pixelFormat;uint64_t offset,row,allocation,width,height;};
+struct SurfaceRefusal {uint32_t step,format,planes,plane,pixelFormat;uint64_t offset,row,allocation,width,height,base,start,page;};
 static SurfaceRefusal gSurfaceLastRefusal;
-static void refuseSurface(uint32_t step,IOSurfaceRef surface,MTLTextureDescriptor *d,NSUInteger plane,uint64_t offset,uint64_t row) {
+static std::atomic<unsigned> gSurfaceRefusalReports{0};
+static void refuseSurface(uint32_t step,IOSurfaceRef surface,MTLTextureDescriptor *d,NSUInteger plane,uint64_t offset,uint64_t row,
+                          uint64_t base=0,uint64_t start=0,uint64_t page=0) {
  gSurfaceRefusals++;
  SurfaceRefusal r={step,surface?IOSurfaceGetPixelFormat(surface):0,surface?(uint32_t)IOSurfaceGetPlaneCount(surface):0,(uint32_t)plane,
-                   d?(uint32_t)d.pixelFormat:0,offset,row,surface?IOSurfaceGetAllocSize(surface):0,d?d.width:0,d?d.height:0};
- std::lock_guard<std::mutex> lock(gProblemLock);gSurfaceLastRefusal=r;
+                   d?(uint32_t)d.pixelFormat:0,offset,row,surface?IOSurfaceGetAllocSize(surface):0,d?d.width:0,d?d.height:0,base,start,page};
+ {std::lock_guard<std::mutex> lock(gProblemLock);gSurfaceLastRefusal=r;}
+ // The first eight refusals name the failing check and every getter the check read,
+ // so a black frame from an unusable surface import is diagnosable from syslog alone.
+ if(gSurfaceRefusalReports.fetch_add(1)<8) {
+  char why[240]{};
+  snprintf(why,sizeof why,"native-metal: surface refusal %u fmt %08x planes %u plane %u pfmt %u off %llu row %llu alloc %llu wh %llux%llu base %llx start %llx page %llu",
+           step,r.format,r.planes,r.plane,r.pixelFormat,(unsigned long long)r.offset,(unsigned long long)r.row,
+           (unsigned long long)r.allocation,(unsigned long long)r.width,(unsigned long long)r.height,
+           (unsigned long long)r.base,(unsigned long long)r.start,(unsigned long long)r.page);
+  NBLOG(@"%s",why);
+ }
 }
 static void noteFormat(uint32_t format,bool made) {
  std::lock_guard<std::mutex> lock(gProblemLock);
@@ -1255,15 +1267,43 @@ static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &arch
  const size_t planes=surface?IOSurfaceGetPlaneCount(surface):0;
  if(!surface || !d || (planes?plane>=planes:plane!=0)){refuseSurface(1,surface,d,plane,0,0);return nil;}
  if(planes)gSurfacePlanar++;
- void *base=IOSurfaceGetBaseAddress(surface);const size_t page=(size_t)getpagesize(),allocation=IOSurfaceGetAllocSize(surface);
- if(!page || (page&(page-1)) || !base || ((uintptr_t)base&(page-1)) || !allocation || allocation>SIZE_MAX-(page-1)){refuseSurface(2,surface,d,plane,(uintptr_t)base,0);return nil;}
- const uintptr_t start=planes?(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,plane):(uintptr_t)base;
+ const size_t page=(size_t)getpagesize();
+ uintptr_t base=(uintptr_t)IOSurfaceGetBaseAddress(surface);
+ const uintptr_t planeBase=planes?(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,plane):base;
+ size_t allocation=(size_t)IOSurfaceGetAllocSize(surface);
  const size_t row=planes?IOSurfaceGetBytesPerRowOfPlane(surface,plane):IOSurfaceGetBytesPerRow(surface);
- if(start<(uintptr_t)base || start-(uintptr_t)base>=allocation || !row){refuseSurface(3,surface,d,plane,start-(uintptr_t)base,row);return nil;}
+ /* v11.43: backboardd asked for 944 textures over planar drawables and every one
+  * was refused, so the render server never wrote a pixel into the surface the
+  * handoff copies. Recover a getter that answers 0 from the plane and row
+  * getters instead of dropping the frame, and report the failing check once. */
+ if(!base && planeBase)base=planeBase;
+ if(!allocation && row) {
+  const size_t height=planes?IOSurfaceGetHeightOfPlane(surface,plane):IOSurfaceGetHeight(surface);
+  const size_t planeOffset=planeBase>base?planeBase-base:0;
+  allocation=planeOffset+row*height;
+  if(planes>1) {
+   const uintptr_t chroma=(uintptr_t)IOSurfaceGetBaseAddressOfPlane(surface,1);
+   const size_t chromaRow=IOSurfaceGetBytesPerRowOfPlane(surface,1),chromaHeight=IOSurfaceGetHeightOfPlane(surface,1);
+   if(chroma>base && chroma-base+chromaRow*chromaHeight>allocation)allocation=chroma-base+chromaRow*chromaHeight;
+  }
+ }
+ if(!page || (page&(page-1)) || !base || (base&(page-1)) || !allocation || allocation>SIZE_MAX-(page-1)){
+  refuseSurface(2,surface,d,plane,base,row,base,planeBase,page);return nil;
+ }
+ uintptr_t start=planeBase;
+ if(start<base || start-base>=allocation) {
+  if(plane){refuseSurface(3,surface,d,plane,start-base,row,base,start,page);return nil;}
+  start=base;   /* plane 0's getter is unusable; its texels start with the surface */
+ }
+ if(!row){refuseSurface(3,surface,d,plane,start-base,row,base,start,page);return nil;}
  const size_t bytes=(allocation+page-1)&~(page-1);
- NBBuffer *buffer=surfaceBuffer(surface,base,bytes);if(!buffer){refuseSurface(4,surface,d,plane,start-(uintptr_t)base,row);return nil;}
- NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-(uintptr_t)base,row):textureOnBuffer(buffer,d,start-(uintptr_t)base,row,true);
- if(!texture){refuseSurface(5,surface,d,plane,start-(uintptr_t)base,row);return nil;}
+ NBBuffer *buffer=surfaceBuffer(surface,(void *)base,bytes);if(!buffer){refuseSurface(4,surface,d,plane,start-base,row,base,start,page);return nil;}
+ NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-base,row):textureOnBuffer(buffer,d,start-base,row,true);
+ if(!texture){refuseSurface(5,surface,d,plane,start-base,row,base,start,page);return nil;}
+ if(gSurfaceTextures.load()<4)
+  NBLOG(@"native-metal: surface import ok fmt %08x planes %u plane %u pfmt %u base %llx alloc %llu row %llu",
+        (uint32_t)IOSurfaceGetPixelFormat(surface),(uint32_t)planes,(uint32_t)plane,(uint32_t)d.pixelFormat,
+        (unsigned long long)base,(unsigned long long)allocation,(unsigned long long)row);
  gSurfaceTextures++;texture.surface=(IOSurfaceRef)CFRetain(surface);return (id<MTLTexture>)texture;
 }
 - (id<MTLLibrary>)newLibraryWithData:(dispatch_data_t)data error:(NSError **)error {
