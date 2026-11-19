@@ -27,7 +27,7 @@ struct Handoff {
     uint64_t completed=0;
     volatile uint8_t *pixels=nullptr;
     uint32_t expected[512]{};
-    uint32_t diagnostics=0,alphaMin=255,alphaMax=0,format=0,snapshotRefusals=0;
+    uint32_t diagnostics=0,alphaMin=255,alphaMax=0,format=0,snapshotRefusals=0,rawProbes=0;
     uint32_t sourceIDs[NGP_MAX_LAYERS]{},rawRGBNonblack=0,rawWordsNonzero=0;
     uint64_t rawColourHash=0,rawAlphaHash=0;
     bool diagnosticPending=false;
@@ -120,6 +120,16 @@ void observePixels() {
     K70BootLog("K70 SOURCE: sequence %llu ids %u/%u/%u/%u rawRGB %u nonzeroWords %u colourHash %llx alphaHash %llx\n",
         (unsigned long long)g.gate.sequence,g.sourceIDs[0],g.sourceIDs[1],g.sourceIDs[2],g.sourceIDs[3],
         g.rawRGBNonblack,g.rawWordsNonzero,(unsigned long long)g.rawColourHash,(unsigned long long)g.rawAlphaHash);
+    /* v11.43: compare the producer bytes (K70 RAW above) with the bytes the
+     * shader will actually read. If RAW is nonblack but these are zero, the
+     * snapshot memcpy/offset is wrong; if both are zero the source is empty. */
+    if(g.frame.count) {
+        const uint8_t *snap=static_cast<const uint8_t *>(g.snapshot[0]->getBytesNoCopy());
+        K70BootLog("K70 SNAPDMP: sequence %llu w0 %08x w1 %08x wmid %08x a0 %02x\n",
+            (unsigned long long)g.gate.sequence,k70_pixel_word(snap),k70_pixel_word(snap+4),
+            k70_pixel_word(snap+size_t(g.frame.layers[0].stride)*1200+2240*4),
+            snap[g.frame.layers[0].alpha_offset?g.frame.layers[0].alpha_offset:0]);
+    }
 }
 bool scanoutMapping(uintptr_t va,uint64_t pa,size_t bytes) {
 #if defined(K70_FRAME_HOST_TEST)
@@ -204,6 +214,31 @@ extern "C" unsigned k70_frame_offer(const K70FrameInput *input,unsigned count)
         const auto &f=input[i];const auto &p=f.scale;const auto &layout=f.layout;
         const uint32_t stride=widths[i]*4;const uint64_t colorBytes=uint64_t(stride)*heights[i];
         auto *dest=static_cast<uint8_t *>(g.snapshot[i]->getBytesNoCopy());
+        /* v11.43 raw-source probe: the SOURCE sampler reported rawRGB 0 /
+         * nonzeroWords 0 for surface 5 even though CoreAnimation swaps kept
+         * arriving. Dump the producer's own bytes at the exact addresses the
+         * two memcpy loops read from, before the copy, so we can tell an
+         * empty source surface from a bad src/alpha offset. Bounded to the
+         * first layer of the first 8 offers plus every 120th, i==0 only. */
+        const bool rawProbe=i==0 && (g.rawProbes<8 || g.rawProbes%120==0);
+        if(rawProbe) {
+            ++g.rawProbes;
+            const uint32_t cStride=k70_pixel_color_stride(layout);
+            const uint64_t cOff=k70_pixel_color_offset(layout);
+            const uint8_t *srcRow=f.base+p.src;
+            const uint32_t midY=heights[i]?heights[i]/2:0,midX=widths[i]?widths[i]/2:0;
+            const uint8_t *srcMid=f.base+p.src+uint64_t(midY)*cStride+uint64_t(midX)*4;
+            const bool xrProbe=layout.format==K70_PIXEL_B3A8;
+            const uint8_t *srcAlpha=xrProbe?f.base+alphaOrigins[i]+uint64_t(midY)*layout.plane[1].stride+midX:nullptr;
+            K70BootLog("K70 RAW: id %u probe %u base %p src %llu cOff %llu cStride %u w %u h %u p0 %08x p1 %08x mid %08x\n",
+                f.surfaceID,g.rawProbes,(const void *)f.base,(unsigned long long)p.src,
+                (unsigned long long)cOff,cStride,widths[i],heights[i],
+                k70_pixel_word(srcRow),k70_pixel_word(srcRow+4),k70_pixel_word(srcMid));
+            K70BootLog("K70 RAW: id %u mid %08x aOff %llu aStride %u aMid %02x aQ %02x%02x%02x%02x\n",
+                f.surfaceID,k70_pixel_word(srcMid),(unsigned long long)(xrProbe?layout.plane[1].offset:0),
+                xrProbe?layout.plane[1].stride:0u,srcAlpha?srcAlpha[0]:0,
+                srcAlpha?srcAlpha[0]:0,srcAlpha?srcAlpha[1]:0,srcAlpha?srcAlpha[2]:0,srcAlpha?srcAlpha[3]:0);
+        }
         for(uint32_t y=0;y<heights[i];++y)
             memcpy(dest+size_t(y)*stride,f.base+p.src+uint64_t(y)*k70_pixel_color_stride(layout),stride);
         const bool xr=layout.format==K70_PIXEL_B3A8;
