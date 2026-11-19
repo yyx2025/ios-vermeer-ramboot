@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #pragma once
+#include <functional>
 #include "GpuScanoutPresenter.h"
 namespace gpuscanout {
 struct Transport {
@@ -15,7 +16,7 @@ public:
      * with the kernel snapshot the shader is about to read. The producer dump
      * must show these bytes if the handoff copy is correct; all-zero here with
      * continuing CoreAnimation swaps means the source surface is empty. */
-    void (*diag)(uint64_t,const NGPScaleSwap *)=nullptr;
+    std::function<void(uint64_t,const NGPScaleSwap *)> diag;
     uint64_t diag_frames_=0;
     bool open(id<MTLDevice> device,id<MTLLibrary> library,const Transport &t) {
         if(!t.call || !t.mapScanout || !device || !library)return false;
